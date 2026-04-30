@@ -1,0 +1,354 @@
+{
+  "feature_id": "phase-1-core-flow",
+  "feature_name": "Core End-to-End Provider Orchestration Flow",
+  "document_type": "functional-spec",
+  "version": "0.1.0",
+  "status": "draft",
+  "source_of_truth": [
+    "C:\\github desktop\\tapi\\goal.txt",
+    "C:\\github desktop\\tapi\\specs\\roadmap\\phased-spec-driven-plan.md",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-0-repo-audit\\audit-report.md"
+  ],
+  "product_scope": {
+    "problem_statement": "The solution needs a minimum end-to-end flow that can be defended in the challenge: schedule daily work, select pending records, dispatch them for execution, call provider APIs, and persist outcomes while preserving strict per-provider isolation.",
+    "goal": "Implement the simplest correct orchestration flow that satisfies the functional core of the challenge before adding advanced resilience and scale patterns.",
+    "success_outcomes": [
+      "A daily process can trigger the orchestration for a target execution date.",
+      "Pending records for the target date are selected and dispatched for execution.",
+      "Requests for the same provider are executed one at a time and in order.",
+      "Requests for different providers can progress in parallel.",
+      "Successful provider responses are persisted.",
+      "Terminal provider failures are persisted as auditable outcomes."
+    ]
+  },
+  "in_scope": [
+    "Daily trigger entry into the orchestration flow.",
+    "Selection of pending records for a logical target date.",
+    "Dispatch of provider work items into the execution pipeline.",
+    "Execution of one provider API call per work item.",
+    "Persistence of successful results.",
+    "Persistence of terminal failures.",
+    "Strict provider-level ordering and serialization.",
+    "Parallel progress across different providers.",
+    "A repository structure and domain flow that are understandable and defendable."
+  ],
+  "out_of_scope": [
+    "Advanced retry orchestration policies.",
+    "DLQ and operational failure recovery details beyond the minimum needed to avoid ambiguity.",
+    "Persistent idempotency mechanisms.",
+    "Large-scale segmentation, distributed map, or shuffle-sharding.",
+    "Advanced observability and metrics.",
+    "Operator-facing dashboards or replay tooling."
+  ],
+  "actors": [
+    {
+      "name": "Scheduler",
+      "description": "Starts the daily core flow."
+    },
+    {
+      "name": "Producer Flow",
+      "description": "Finds pending work for the target date and dispatches it."
+    },
+    {
+      "name": "Execution Flow",
+      "description": "Consumes one work item at a time for a provider and calls the provider API."
+    },
+    {
+      "name": "Provider API",
+      "description": "Receives the outgoing request for a work item."
+    },
+    {
+      "name": "Technical Reviewer",
+      "description": "Evaluates whether the core solution is correct, coherent, and aligned with the challenge."
+    }
+  ],
+  "user_journeys": [
+    {
+      "id": "journey-01",
+      "name": "Daily core orchestration",
+      "steps": [
+        "A scheduled event starts the orchestration for a date.",
+        "The system selects eligible pending records for that date.",
+        "The system dispatches one execution message per eligible record.",
+        "The system routes those messages through provider-aware ordering.",
+        "The system executes provider calls and persists final outcomes."
+      ]
+    },
+    {
+      "id": "journey-02",
+      "name": "Successful provider execution",
+      "steps": [
+        "A work item reaches the execution flow.",
+        "The system calls the provider endpoint using the record contract.",
+        "The provider responds successfully.",
+        "The system persists the successful result for audit."
+      ]
+    },
+    {
+      "id": "journey-03",
+      "name": "Terminal failure persistence",
+      "steps": [
+        "A work item reaches the execution flow.",
+        "The provider responds with a non-retryable or terminal error.",
+        "The system persists the failure outcome with enough context for review.",
+        "The item stops as a terminal result of the core flow."
+      ]
+    },
+    {
+      "id": "journey-04",
+      "name": "Provider isolation",
+      "steps": [
+        "Multiple records exist for the same provider and other providers.",
+        "The system dispatches all eligible records.",
+        "Records for the same provider are processed strictly one at a time and in order.",
+        "Records for different providers may advance concurrently."
+      ]
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "uc-01",
+      "title": "Start daily orchestration",
+      "description": "The system begins a daily run for a target date, defaulting to the current scheduled date when no override is provided."
+    },
+    {
+      "id": "uc-02",
+      "title": "Select pending records",
+      "description": "The system retrieves eligible pending records for the target date."
+    },
+    {
+      "id": "uc-03",
+      "title": "Dispatch work items",
+      "description": "The system publishes one execution message per eligible record using provider-aware grouping."
+    },
+    {
+      "id": "uc-04",
+      "title": "Execute provider request",
+      "description": "The system performs the provider API call for one work item."
+    },
+    {
+      "id": "uc-05",
+      "title": "Persist success outcome",
+      "description": "The system stores the successful provider response as a durable result."
+    },
+    {
+      "id": "uc-06",
+      "title": "Persist terminal failure outcome",
+      "description": "The system stores a terminal failure result with enough context for technical review."
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "br-01",
+      "rule": "A pending record represents exactly one provider work item for one logical execution date."
+    },
+    {
+      "id": "br-02",
+      "rule": "Only records in pending state are eligible for dispatch in the core flow."
+    },
+    {
+      "id": "br-03",
+      "rule": "Every eligible record must produce exactly one dispatched execution work item in the core flow."
+    },
+    {
+      "id": "br-04",
+      "rule": "Records for the same provider must never execute concurrently."
+    },
+    {
+      "id": "br-05",
+      "rule": "Records for the same provider must preserve ordering from dispatch through execution."
+    },
+    {
+      "id": "br-06",
+      "rule": "Records for different providers may execute in parallel."
+    },
+    {
+      "id": "br-07",
+      "rule": "A successful provider response must be persisted as a result record."
+    },
+    {
+      "id": "br-08",
+      "rule": "A terminal provider failure must be persisted as a failure result record."
+    },
+    {
+      "id": "br-09",
+      "rule": "This phase must prefer clarity and correctness of the core flow over advanced optimization."
+    },
+    {
+      "id": "br-10",
+      "rule": "The core flow must stay explainable as the foundation for later resilience and scale phases."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "fr-01",
+      "title": "Daily trigger",
+      "statement": "The system must support a scheduled entrypoint that starts the core orchestration flow once per day."
+    },
+    {
+      "id": "fr-02",
+      "title": "Target-date support",
+      "statement": "The system must support resolving the logical date whose pending work is being processed."
+    },
+    {
+      "id": "fr-03",
+      "title": "Pending record selection",
+      "statement": "The system must retrieve eligible pending records for the target date."
+    },
+    {
+      "id": "fr-04",
+      "title": "Dispatch of execution work",
+      "statement": "The system must dispatch one execution work item per eligible pending record."
+    },
+    {
+      "id": "fr-05",
+      "title": "Provider-level serialization",
+      "statement": "The system must serialize execution for each provider."
+    },
+    {
+      "id": "fr-06",
+      "title": "Cross-provider parallelism",
+      "statement": "The system must allow execution progress across different providers at the same time."
+    },
+    {
+      "id": "fr-07",
+      "title": "Provider request execution",
+      "statement": "The system must perform the provider request described by the dispatched work item."
+    },
+    {
+      "id": "fr-08",
+      "title": "Success persistence",
+      "statement": "The system must persist successful provider outcomes."
+    },
+    {
+      "id": "fr-09",
+      "title": "Terminal failure persistence",
+      "statement": "The system must persist terminal provider failures."
+    },
+    {
+      "id": "fr-10",
+      "title": "Core flow traceability",
+      "statement": "The system must make the path from scheduled trigger to final persisted outcome understandable in code and tests."
+    }
+  ],
+  "interaction_expectations": [
+    {
+      "id": "ux-01",
+      "expectation": "A reviewer should be able to follow the core flow end-to-end without ambiguity about which component is responsible for selection, dispatch, execution, and persistence."
+    },
+    {
+      "id": "ux-02",
+      "expectation": "The core phase should avoid redundant handlers or split mental models that make the architecture harder to explain."
+    },
+    {
+      "id": "ux-03",
+      "expectation": "The code should establish a stable foundation for later resilience and scale phases instead of hiding future complexity in the core path."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "ac-01",
+      "given": "A daily scheduled trigger occurs",
+      "when": "The core flow starts",
+      "then": "The system resolves a target execution date and begins processing pending work for that date."
+    },
+    {
+      "id": "ac-02",
+      "given": "There are pending records for the target date",
+      "when": "The producer flow runs",
+      "then": "The system dispatches one execution work item per eligible pending record."
+    },
+    {
+      "id": "ac-03",
+      "given": "There are no pending records for the target date",
+      "when": "The producer flow runs",
+      "then": "The system completes without dispatching execution work."
+    },
+    {
+      "id": "ac-04",
+      "given": "Two or more dispatched items belong to the same provider",
+      "when": "They enter the execution path",
+      "then": "They are processed one at a time and in order."
+    },
+    {
+      "id": "ac-05",
+      "given": "Dispatched items belong to different providers",
+      "when": "They enter the execution path",
+      "then": "They may progress in parallel without violating same-provider isolation."
+    },
+    {
+      "id": "ac-06",
+      "given": "A provider call succeeds",
+      "when": "Execution finishes",
+      "then": "The system persists a successful result record."
+    },
+    {
+      "id": "ac-07",
+      "given": "A provider call fails with a terminal outcome",
+      "when": "Execution finishes",
+      "then": "The system persists a failure result record."
+    },
+    {
+      "id": "ac-08",
+      "given": "A reviewer inspects the implementation",
+      "when": "They trace the core orchestration path",
+      "then": "They can map scheduler, producer, execution, and persistence responsibilities without relying on implicit behavior."
+    }
+  ],
+  "assumptions": [
+    "This phase optimizes for a correct and explainable core flow, not for complete production hardening.",
+    "Advanced retries, idempotency persistence, and massive-scale segmentation will be handled in later phases.",
+    "The core phase may reuse ideas or selected modules from the current repository, but it is free to simplify or replace them for clarity.",
+    "A target-date override remains useful for manual runs and testability."
+  ],
+  "open_questions": [
+    {
+      "id": "oq-01",
+      "question": "Should the core flow keep a separate orchestrator component between queue consumption and provider execution, or collapse execution responsibilities for simplicity if that improves explainability?"
+    },
+    {
+      "id": "oq-02",
+      "question": "Should pending-record state transitions beyond PENDING be part of the core flow now, or deferred until resilience and idempotency are specified in phase 2?"
+    }
+  ],
+  "traceability_summary": {
+    "phase_goal_alignment": [
+      {
+        "goal_area": "Daily orchestration entry",
+        "mapped_requirements": [
+          "fr-01",
+          "fr-02",
+          "ac-01"
+        ]
+      },
+      {
+        "goal_area": "Pending work selection and dispatch",
+        "mapped_requirements": [
+          "fr-03",
+          "fr-04",
+          "ac-02",
+          "ac-03"
+        ]
+      },
+      {
+        "goal_area": "Per-provider execution control",
+        "mapped_requirements": [
+          "fr-05",
+          "fr-06",
+          "ac-04",
+          "ac-05"
+        ]
+      },
+      {
+        "goal_area": "Final outcome persistence",
+        "mapped_requirements": [
+          "fr-07",
+          "fr-08",
+          "fr-09",
+          "ac-06",
+          "ac-07"
+        ]
+      }
+    ]
+  }
+}

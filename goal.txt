@@ -1,0 +1,119 @@
+Informe Técnico: Arquitectura Serverless de Alta Disponibilidad para la Orquestación Masiva de APIs en AWS
+
+1. Introducción y Contexto del Proyecto
+
+El presente documento establece el blueprint técnico para una solución serverless diseñada para la ejecución masiva de consultas distribuidas sobre una base de datos de escala millonaria (1M de registros iniciales con crecimiento elástico). La arquitectura responde a la necesidad crítica de automatizar el consumo de APIs internas, garantizando un procesamiento equitativo, resiliente y aislado.
+
+Objetivos Mandatorios de la Solución:
+
+* Automatización Distribuida: Programación de consultas diarias distribuidas mediante ventanas temporales para mitigar picos de carga.
+* Persistencia Íntegra: Almacenamiento de resultados en una capa de datos de alto rendimiento con latencias sub-milisegundo.
+* Orquestación de Fallos: Clasificación y manejo granular de errores reintentables y no reintentables.
+* Control de Concurrencia por Proveedor: Aislamiento estricto del tráfico para evitar la saturación de endpoints de terceros, respetando estrictamente el orden de los mensajes por grupo.
+
+2. Análisis Teórico de Componentes Críticos
+
+Amazon EventBridge Scheduler
+
+Para la orquestación temporal a escala, la arquitectura descarta AWS::Event::Rule en favor de Amazon EventBridge Scheduler. Las limitaciones de 300 reglas por bus son insuficientes para este volumen; Scheduler permite hasta 1,000,000 de eventos por cuenta.
+
+* Precisión Horaria: Permite el uso de parámetros de "Timezone" para ejecutar consultas basadas en la hora local del proveedor o usuario, cumpliendo el objetivo de distribución horaria.
+* Escalabilidad: Soporta la invocación masiva de targets sin la sobrecarga administrativa de gestionar múltiples Event Buses.
+
+Amazon SQS FIFO y Alto Rendimiento
+
+La integridad del orden y la entrega Exactly-Once se garantiza mediante colas FIFO.
+
+* MessageDeduplicationId: Token obligatorio para la eliminación de duplicados en una ventana de 5 minutos.
+* MessageGroupId: Parámetro que define la partición lógica. Mientras que el procesamiento dentro de un grupo es secuencial, la arquitectura escala horizontalmente procesando múltiples grupos en paralelo.
+* Configuración de Alto Rendimiento: Para superar el límite estándar de 300 TPS, el diseño mandata habilitar el modo High Throughput, configurando FifoThroughputLimit como PER_MESSAGE_GROUP_ID y DeduplicationScope a nivel de messageGroup.
+
+AWS Step Functions: Standard Workflows
+
+Se seleccionan Step Functions (Standard) para la lógica de reintentos y manejo de errores complejos. A diferencia de Lambda por sí solo, Step Functions permite implementar estados de "Fail" específicos y derivar mensajes a Dead Letter Queues (DLQ) tras agotar políticas de backoff y jitter, protegiendo el flujo de errores no reintentables que podrían bloquear un grupo de mensajes en SQS FIFO.
+
+3. Diseño de la Arquitectura de Datos: Amazon DynamoDB
+
+Estrategia de Modelado y Single Table Design
+
+Se aplica el enfoque "Access Pattern First". Para garantizar la escalabilidad, se implementa Single Table Design, consolidando entidades (User, Order, Item) para minimizar los saltos de red. Para evitar "Hot Partitions" en una ingesta de 1M de registros, la Partition Key (PK) debe tener alta cardinalidad.
+
+Optimización de Throughput y Particionamiento
+
+Para mitigar cuellos de botella en la escritura masiva, se implementan las siguientes estrategias:
+
+Estrategia	Implementación Técnica y Beneficio
+Cardinalidad de PK	Uso de IDs compuestos (ej. USER#<UUID>) para distribuir el tráfico entre nodos de almacenamiento.
+Global Secondary Indexes (GSI)	Proyección de atributos específicos para soportar patrones de consulta secundarios sin penalizar el rendimiento de la tabla base.
+Time to Live (TTL)	Configuración de atributos de expiración (Unix timestamp) para la limpieza automática de datos transitorios (tokens, logs).
+Write Sharding	Implementación de sufijos aleatorios en la PK (ej. PROVIDER#123#shard_n) para distribuir escrituras de un solo proveedor masivo.
+
+Modos de Capacidad
+
+* On-Demand: Se establece para la fase de despliegue inicial y pruebas de carga para absorber picos impredecibles.
+* Provisioned con Auto-scaling: Se mandata una vez estabilizados los patrones de tráfico para optimizar la eficiencia de costes.
+
+4. Implementación de la Orquestación Masiva
+
+Ingestión y Pipeline de Ejecución
+
+Para evitar el Timeout de Lambda al leer 1 millón de registros, la arquitectura prohíbe una lectura lineal única.
+
+1. Segmentación: Una Step Function utiliza un Distributed Map o una estrategia de paginación para escanear DynamoDB en segmentos.
+2. Encolado: Los registros se envían a la cola SQS FIFO en lotes (Batches) de 10 mensajes para maximizar el throughput.
+3. Procesamiento: Lambda consume los mensajes respetando el MessageGroupId del proveedor. El escalado es horizontal entre diferentes grupos.
+4. Consumo de API: Se invoca la Step Function de ejecución para gestionar la lógica de negocio y persistencia final.
+
+Alta Disponibilidad y Shuffle-sharding
+
+Para blindar el sistema contra "vecinos ruidosos", se aplica Shuffle-sharding. Matemáticamente, al asignar proveedores a shards de colas aleatorias (ej. r=2 de n=100), reducimos la probabilidad de colisión de dos proveedores críticos al 0.02%. Con r=3, esta probabilidad cae al 0.0006%. Esto garantiza que un pico masivo de un proveedor no degrade la latencia del sistema global.
+
+En regiones de alto rendimiento como US East (N. Virginia), esta configuración permite alcanzar hasta 70,000 TPS en operaciones individuales y 700,000 mensajes por segundo mediante el uso eficiente de batches.
+
+5. Metodología de Desarrollo y Excelencia Operativa
+
+Arquitectura Hexagonal (Ports & Adapters)
+
+El código debe estar estrictamente desacoplado de los SDKs de AWS para permitir TDD y portabilidad. La estructura de carpetas mandatoria es:
+
+* entrypoints/: Adaptadores primarios (Handlers de Lambda).
+* domain/: Núcleo de la lógica. Debe contener:
+  * command_handlers/: Clases que ejecutan acciones sobre el dominio.
+  * commands/: Objetos de transferencia de información.
+  * events/: Eventos emitidos tras cambios de estado.
+  * exceptions/: Definición de errores de negocio.
+  * model/: Entidades y Value Objects.
+  * ports/: Interfaces/Abstracciones para DBs y APIs externas.
+  * tests/: Pruebas unitarias de lógica pura.
+* adapters/: Implementaciones concretas de los puertos (Repositorios DynamoDB, Clientes de API).
+
+Infraestructura como Código (AWS CDK)
+
+Se utiliza AWS CDK (TypeScript) para garantizar la seguridad de tipos (Type-safety) y abstracciones de nivel de recurso. CDK permite que la infraestructura y el código de aplicación coexistan en el mismo repositorio, asegurando que los cambios en la arquitectura (como la creación de un GSI) se desplieguen de forma atómica con el código que los consume.
+
+Pipeline de CI/CD (GitHub Actions)
+
+1. Lint/Unit Tests: Validación de lógica de dominio.
+2. OIDC Authentication: Conexión federada con AWS para eliminar el uso de Access Keys estáticas.
+3. Artifact Staging: Carga de assets a Amazon S3.
+4. Despliegue Controlado: Uso de CloudFormation para actualizaciones incrementales y seguras.
+
+6. Mejores Prácticas y Observabilidad
+
+Optimización de Lambda
+
+1. Reutilización del Execution Context: La arquitectura mandata inicializar clientes de AWS y conexiones fuera del handler.
+2. Idempotency Utility: Se debe implementar la utilidad de idempotencia de AWS Lambda Powertools, utilizando una tabla de DynamoDB dedicada para persistir el estado de procesamiento de los IDs y evitar llamadas duplicadas a APIs externas.
+3. Ajuste de CPU: Se requiere el uso de AWS Lambda Power Tuning para identificar el punto óptimo de memoria, ya que un aumento en memoria escala linealmente la capacidad de vCPU disponible.
+
+Observabilidad Avanzada
+
+Para sistemas que procesan billones de invocaciones, el monitoreo de CloudWatch debe incluir:
+
+* AsyncEventReceived: Para detectar problemas de entrega desde el origen hacia la capa de computación.
+* AsyncEventDropped: Métrica crítica para detectar pérdida de datos por expiración de mensajes o fallos de reintento.
+* AsyncEventAge: Monitoreo del P99 del tiempo de permanencia en cola para alertar sobre cuellos de botella de capacidad.
+
+7. Conclusiones y Próximos Pasos
+
+La arquitectura aquí descrita garantiza una solución robusta capaz de escalar de 1M a decenas de millones de registros mediante el desacoplamiento granular y el uso de patrones de aislamiento como Shuffle-sharding. La rigurosidad de la Arquitectura Hexagonal y la automatización vía AWS CDK aseguran que el sistema no solo sea performante, sino también mantenible y evolucionable a largo plazo. El siguiente paso crítico es la validación del throughput configurado en un entorno de staging mediante pruebas de estrés que confirmen el comportamiento de las particiones SQS FIFO.

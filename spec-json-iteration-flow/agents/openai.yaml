@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spec JSON Flow"
+  short_description: "Iterative JSON specs before coding with skill routing."
+  default_prompt: "Run a gated flow: context scan, functional JSON, technical JSON, todos JSON, then implement only after approval."

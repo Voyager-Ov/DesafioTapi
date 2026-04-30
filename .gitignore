@@ -1,0 +1,8 @@
+node_modules/
+dist/
+cdk/cdk.out/
+cdk/dist/
+*.tsbuildinfo
+payload.json
+response.json
+.DS_Store

@@ -1,0 +1,109 @@
+{
+  "feature_id": "phase-0-repo-audit",
+  "document_type": "todos",
+  "version": "0.1.0",
+  "execution_batches": [
+    {
+      "id": "batch-1",
+      "mode": "sequential",
+      "description": "Gather current-state evidence before writing the diagnosis.",
+      "tasks": [
+        "T0-01",
+        "T0-02"
+      ]
+    },
+    {
+      "id": "batch-2",
+      "mode": "sequential",
+      "description": "Produce the audit artifacts and roadmap from the gathered evidence.",
+      "tasks": [
+        "T0-03",
+        "T0-04",
+        "T0-05"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T0-01",
+      "title": "Scan repository structure and key modules",
+      "owner_role": "lead-engineer",
+      "status": "done",
+      "parallelizable": false,
+      "depends_on": [],
+      "outputs": [
+        "Factual understanding of current src/, cdk/, test/, and package.json"
+      ],
+      "exit_criteria": [
+        "Main runtime, infrastructure, and test entrypoints have been reviewed."
+      ]
+    },
+    {
+      "id": "T0-02",
+      "title": "Validate build and test baseline",
+      "owner_role": "lead-engineer",
+      "status": "done",
+      "parallelizable": false,
+      "depends_on": [
+        "T0-01"
+      ],
+      "outputs": [
+        "Build result",
+        "Test result"
+      ],
+      "exit_criteria": [
+        "The current repository build status and unit test status are known."
+      ]
+    },
+    {
+      "id": "T0-03",
+      "title": "Write phased roadmap document",
+      "owner_role": "lead-engineer",
+      "status": "done",
+      "parallelizable": false,
+      "depends_on": [
+        "T0-02"
+      ],
+      "outputs": [
+        "specs/roadmap/phased-spec-driven-plan.md"
+      ],
+      "exit_criteria": [
+        "The roadmap defines phases, execution rules, and goals."
+      ]
+    },
+    {
+      "id": "T0-04",
+      "title": "Write phase 0 gated specs",
+      "owner_role": "lead-engineer",
+      "status": "done",
+      "parallelizable": false,
+      "depends_on": [
+        "T0-03"
+      ],
+      "outputs": [
+        "functional-spec.json",
+        "technical-spec.json",
+        "todos.json"
+      ],
+      "exit_criteria": [
+        "Phase 0 has explicit functional, technical, and execution artifacts."
+      ]
+    },
+    {
+      "id": "T0-05",
+      "title": "Write audit diagnosis report",
+      "owner_role": "lead-engineer",
+      "status": "done",
+      "parallelizable": false,
+      "depends_on": [
+        "T0-04"
+      ],
+      "outputs": [
+        "audit-report.md"
+      ],
+      "exit_criteria": [
+        "The current repository is classified and mapped against the challenge requirements."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "feature_id": "phase-1-core-flow",
+  "document_type": "todos",
+  "version": "0.1.0",
+  "execution_batches": [
+    {
+      "id": "batch-1",
+      "mode": "sequential",
+      "description": "Simplify the runtime architecture and remove phase-1-incompatible flow pieces.",
+      "tasks": [
+        "T1-01",
+        "T1-02"
+      ]
+    },
+    {
+      "id": "batch-2",
+      "mode": "parallel",
+      "description": "Align core producer and consumer paths with the simplified architecture.",
+      "tasks": [
+        "T1-03",
+        "T1-04"
+      ]
+    },
+    {
+      "id": "batch-3",
+      "mode": "sequential",
+      "description": "Align infrastructure and validate the core flow end-to-end through tests and build.",
+      "tasks": [
+        "T1-05",
+        "T1-06"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T1-01",
+      "title": "Retire orchestrator and Step Functions from phase 1 runtime path",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [],
+      "outputs": [
+        "One clearly defined runtime path for phase 1"
+      ],
+      "exit_criteria": [
+        "Phase 1 runtime no longer depends on orchestrator or Step Functions.",
+        "There is no ambiguity about which component consumes the FIFO queue in phase 1."
+      ]
+    },
+    {
+      "id": "T1-02",
+      "title": "Unify consumer runtime entrypoint around direct queue consumption",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "T1-01"
+      ],
+      "outputs": [
+        "One consumer entrypoint aligned with the phase 1 flow"
+      ],
+      "exit_criteria": [
+        "Consumer code exposes one clear runtime path for SQS-driven execution.",
+        "The code no longer keeps duplicate mental models for provider execution."
+      ]
+    },
+    {
+      "id": "T1-03",
+      "title": "Align producer domain and adapters with phase 1 dispatch rules",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": true,
+      "depends_on": [
+        "T1-02"
+      ],
+      "outputs": [
+        "Producer flow consistent with target-date processing and FIFO grouping"
+      ],
+      "exit_criteria": [
+        "Producer selects PENDING records for the target date.",
+        "Producer dispatches one FIFO message per eligible record.",
+        "MessageGroupId and MessageDeduplicationId match the phase 1 contract."
+      ]
+    },
+    {
+      "id": "T1-04",
+      "title": "Align consumer domain and adapters with final-outcome persistence",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": true,
+      "depends_on": [
+        "T1-02"
+      ],
+      "outputs": [
+        "Consumer flow consistent with success and terminal-failure persistence"
+      ],
+      "exit_criteria": [
+        "Consumer executes one provider request per message.",
+        "Successful results are persisted.",
+        "Terminal failures are persisted.",
+        "Pending-record lifecycle mutation is not introduced in phase 1."
+      ]
+    },
+    {
+      "id": "T1-05",
+      "title": "Align CDK infrastructure with simplified phase 1 runtime",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "T1-03",
+        "T1-04"
+      ],
+      "outputs": [
+        "Infrastructure definition that matches the simplified runtime path"
+      ],
+      "exit_criteria": [
+        "Scheduler points to producer.",
+        "FIFO queue points directly to consumer.",
+        "Unused phase 1 orchestration resources are removed or isolated from the runtime path.",
+        "Permissions reflect the simplified design."
+      ]
+    },
+    {
+      "id": "T1-06",
+      "title": "Update tests and validate phase 1 core flow",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "T1-05"
+      ],
+      "outputs": [
+        "Passing tests and build for the phase 1 architecture"
+      ],
+      "exit_criteria": [
+        "Build passes.",
+        "Producer tests prove dispatch behavior.",
+        "Consumer tests prove success and terminal-failure persistence.",
+        "Handler tests match the simplified runtime path."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,225 @@
+{
+  "feature_id": "phase-1-core-flow",
+  "feature_name": "Core End-to-End Provider Orchestration Flow",
+  "document_type": "technical-spec",
+  "version": "0.1.0",
+  "status": "draft",
+  "architecture": {
+    "goal": "Implement a simple and defendable end-to-end flow for the challenge core by using a daily producer, SQS FIFO for provider serialization, a direct consumer for provider execution, and DynamoDB for final outcomes.",
+    "runtime_shape": [
+      "EventBridge Scheduler triggers Producer Lambda once per day",
+      "Producer Lambda resolves target date and reads pending records for that date",
+      "Producer Lambda publishes one SQS FIFO message per eligible pending record",
+      "SQS FIFO enforces provider-level ordering through MessageGroupId",
+      "Consumer Lambda reads SQS messages and executes provider API calls directly",
+      "Consumer Lambda persists success outcomes or terminal failure outcomes in the results table"
+    ],
+    "explicit_non_goals_for_phase": [
+      "Step Functions orchestration",
+      "Persistent idempotency store",
+      "Advanced retry policy orchestration",
+      "Massive-scale segmentation and distributed map",
+      "Pending-record lifecycle state transitions beyond PENDING"
+    ]
+  },
+  "module_boundaries": [
+    {
+      "module": "Scheduler entry",
+      "responsibility": "Start the daily core flow and optionally pass a target-date override."
+    },
+    {
+      "module": "Producer",
+      "responsibility": "Read pending records for a target date and dispatch one FIFO message per eligible record."
+    },
+    {
+      "module": "Queue contract",
+      "responsibility": "Preserve same-provider ordering and enable cross-provider concurrency."
+    },
+    {
+      "module": "Consumer",
+      "responsibility": "Execute the provider request for one record and persist the final outcome."
+    },
+    {
+      "module": "Results persistence",
+      "responsibility": "Store successful outcomes and terminal failures in a durable and auditable structure."
+    }
+  ],
+  "interfaces_and_contracts": [
+    {
+      "name": "ProviderRecord",
+      "purpose": "Represent one pending work item to be executed.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "endpoint": "string",
+        "httpMethod": "GET | POST | PUT | PATCH",
+        "payload": "Record<string, unknown> | undefined",
+        "headers": "Record<string, string> | undefined",
+        "scheduledDate": "YYYY-MM-DD",
+        "status": "PENDING | IN_PROGRESS | SUCCESS | FAILED"
+      }
+    },
+    {
+      "name": "SqsMessage",
+      "purpose": "Transport one ProviderRecord through FIFO queueing.",
+      "shape": {
+        "messageBody": "serialized ProviderRecord",
+        "messageGroupId": "PROVIDER#<providerId>",
+        "messageDeduplicationId": "<recordId>#<scheduledDate>"
+      }
+    },
+    {
+      "name": "ProviderApiResult",
+      "purpose": "Represent a successful provider response.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "statusCode": "number",
+        "responseBody": "unknown",
+        "durationMs": "number",
+        "processedAt": "ISO-8601 timestamp"
+      }
+    },
+    {
+      "name": "FailureResult",
+      "purpose": "Represent a terminal provider failure stored as a final outcome.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "statusCode": "number",
+        "errorMessage": "string",
+        "processedAt": "ISO-8601 timestamp"
+      }
+    }
+  ],
+  "data_and_storage_design": [
+    {
+      "component": "Pending records table",
+      "decision": "Keep a table that supports reading pending records for a target date in phase 1.",
+      "usage": "The producer reads items whose logical date matches the execution date and whose status is PENDING.",
+      "note": "Phase 1 accepts the current date-based access pattern as a temporary core-flow baseline, even though phase 3 will revisit large-scale partitioning."
+    },
+    {
+      "component": "Results table",
+      "decision": "Store one final outcome record per processed item, whether success or terminal failure.",
+      "usage": "The consumer writes auditable outcome records keyed by provider and processed timestamp.",
+      "note": "Outcome persistence is the authoritative evidence of what happened in phase 1; pending item state transitions are deferred."
+    }
+  ],
+  "behavioral_decisions": [
+    {
+      "decision": "Remove orchestrator and Step Functions from the phase 1 runtime path.",
+      "rationale": "They add complexity that is not needed to demonstrate the core orchestration behavior and make the narrative harder to explain."
+    },
+    {
+      "decision": "Keep pending records selected by status=PENDING only.",
+      "rationale": "This phase models pending items as inputs, not as a full workflow state machine."
+    },
+    {
+      "decision": "Persist final outcomes instead of mutating pending records through multiple lifecycle states.",
+      "rationale": "This cleanly separates input eligibility from execution result and avoids premature complexity before phase 2."
+    },
+    {
+      "decision": "Treat terminal errors as persisted failures and non-terminal concerns as future phase work.",
+      "rationale": "Phase 1 needs deterministic final outcomes for the core path, not complete operational recovery."
+    }
+  ],
+  "implementation_changes": [
+    {
+      "area": "Runtime flow",
+      "changes": [
+        "Use the scheduled producer as the single entrypoint for daily orchestration.",
+        "Wire SQS FIFO directly to the consumer for message execution.",
+        "Make the consumer responsible for calling the provider and persisting final outcomes."
+      ]
+    },
+    {
+      "area": "Code structure",
+      "changes": [
+        "Keep producer and consumer domain logic isolated from AWS SDK details through ports and adapters.",
+        "Remove or retire the orchestrator path from the core runtime design.",
+        "Avoid duplicate mental models for consumer entrypoints; one runtime path should represent the phase 1 design clearly."
+      ]
+    },
+    {
+      "area": "Infra alignment",
+      "changes": [
+        "CDK must provision only the services used by the phase 1 runtime path.",
+        "Queue permissions and lambda event source wiring must match the simplified flow.",
+        "Scheduler target, queue target, and table permissions must remain least-privilege and explainable."
+      ]
+    }
+  ],
+  "failure_modes_and_edge_handling": [
+    {
+      "case": "No pending records exist for the target date",
+      "handling": "Producer completes successfully without dispatching messages."
+    },
+    {
+      "case": "A pending item is not in PENDING state when read",
+      "handling": "Producer skips it and counts it as non-dispatched."
+    },
+    {
+      "case": "Consumer receives invalid message payload",
+      "handling": "Treat the message as failed for the queue-consumer contract and do not persist a synthetic success."
+    },
+    {
+      "case": "Provider call succeeds",
+      "handling": "Persist a success outcome record."
+    },
+    {
+      "case": "Provider call fails with a terminal error",
+      "handling": "Persist a terminal failure outcome record."
+    },
+    {
+      "case": "Provider call fails with a transient or unexpected error",
+      "handling": "Do not solve full retry orchestration in phase 1; preserve error classification in the domain so phase 2 can extend it cleanly."
+    }
+  ],
+  "testing_strategy": {
+    "quality_gates": [
+      "TypeScript build passes.",
+      "Producer unit tests validate selection, dispatch, grouping, deduplication, and empty-input behavior.",
+      "Consumer unit tests validate success persistence and terminal-failure persistence.",
+      "Handler tests validate scheduled input parsing and queue-consumer message handling.",
+      "Core phase tests make the end-to-end control flow understandable from scheduler to persistence."
+    ],
+    "expected_test_scenarios": [
+      "Producer dispatches one message per pending record.",
+      "Producer skips non-PENDING records.",
+      "Producer assigns MessageGroupId by provider.",
+      "Producer assigns MessageDeduplicationId by record/date.",
+      "Consumer persists success outcome on successful provider response.",
+      "Consumer persists failure outcome on terminal provider error.",
+      "Consumer does not persist success on invalid or terminal execution path.",
+      "Queue handler reports failures for invalid or failed messages."
+    ]
+  },
+  "phased_implementation_plan": [
+    {
+      "phase": "1",
+      "goal": "Deliver the minimum correct orchestration flow for the challenge.",
+      "tasks": [
+        "Simplify the runtime architecture to Scheduler -> Producer -> SQS FIFO -> Consumer -> Results Table.",
+        "Align domain contracts and adapters with that simplified flow.",
+        "Remove or isolate orchestrator and Step Functions from phase 1 runtime responsibilities.",
+        "Ensure CDK reflects the simplified runtime design.",
+        "Run build and tests and close phase 1 gaps."
+      ],
+      "dependencies": [
+        "Approved phase-1 functional-spec.json"
+      ],
+      "definition_of_done": [
+        "One clear daily orchestration path exists.",
+        "Provider-level serialization is enforced by queue configuration and message grouping.",
+        "Success and terminal failure outcomes are persisted.",
+        "The simplified architecture is reflected consistently in code, tests, and CDK."
+      ]
+    }
+  ],
+  "assumptions": [
+    "The current repository may reuse existing producer and consumer domain pieces where they align with the simplified design.",
+    "Transient-error retry behavior can remain intentionally incomplete in phase 1 as long as the classification boundary stays explicit for later phases.",
+    "Date-based pending-record access is acceptable as a temporary phase-1 simplification even though it is not the final large-scale answer."
+  ]
+}
