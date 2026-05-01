@@ -126,6 +126,15 @@ The official end-to-end validation path for Phase 3 will:
 - Operational rule:
   When validating a repaired workflow, distinguish current execution failures from stale state inherited from previous broken executions before drawing architecture-level conclusions.
 
+## Current Status Update
+After a clean rerun of the `100`-record smoke test with a fresh isolated seed on May 1, 2026:
+- `tapi-pending-records` closed `60 COMPLETED / 40 FAILED / 0 IN_PROGRESS`
+- `tapi-idempotency` closed `60 COMPLETED / 40 FAILED / 0 IN_PROGRESS`
+- `tapi-results` persisted `100` final rows (`60` with `200`, `20` with `400`, `20` with `503`)
+- the FIFO queue drained to zero
+
+This confirms the previous `93/100` finding was inherited stale operational state, not a reproducible defect of the current runtime.
+
 ## Consequences
 - The end-to-end validator is now aligned with the actual runtime architecture.
 - The operational proof path is slower than a naive CLI smoke test, but materially more trustworthy.

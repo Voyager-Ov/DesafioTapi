@@ -169,8 +169,14 @@ Esperado:
 - los cuatro caminos de fase 2 siguen cerrando bien bajo dispatch distribuido
 - la narrativa de escala queda defendida: `288` particiones por dia + `SQS FIFO High Throughput`
 
-## Smoke test: 100 registros en un solo slot
-Para una validacion rapida de Fase 3, el repo incluye un script dedicado que:
+## Scripts de validacion
+El repo ahora tiene un runner generico y dos wrappers chicos:
+- `scripts/phase3-validate-slot.ps1`: runner parametrizable para una sola corrida sobre un `slot`
+- `scripts/phase3-validate-100.ps1`: wrapper fijo para el smoke test de `100`
+- `scripts/phase3-validate-10000.ps1`: wrapper fijo para una corrida de carga de `10000`
+
+### Smoke test: 100 registros en un solo slot
+Para una validacion rapida de Fase 3, el wrapper de `100`:
 - genera `100` registros `PENDING` en el mismo `dispatchSlot`
 - concentra carga real sobre los mismos `providerId` para probar serializacion FIFO
 - mezcla `60` respuestas `200`, `20` respuestas `400` y `20` respuestas `503`
@@ -218,27 +224,89 @@ Notas operativas:
 - cada corrida usa `providerId` con sufijo `runId` para no contaminarse con mensajes viejos todavia presentes en la FIFO
 - `scripts/phase2-validate.ps1` queda retirado porque modelaba el runtime viejo
 
+### Corrida grande: 10000 registros con generacion random
+Para una prueba mas cercana a volumen, el wrapper de `10000`:
+- genera `10000` registros en un loop, sin sembrarlos uno por uno
+- usa `250` proveedores aleatorios por corrida para sostener paralelismo real por `MessageGroupId`
+- reparte categorias con random ponderado:
+  - `60%` hacia `200`
+  - `20%` hacia `400`
+  - `20%` hacia `503`
+- mantiene el mismo `slotId = 149`
+- valida cierre total en `pending`, `idempotency`, `results` y cola FIFO
+
+```powershell
+cd "C:\github desktop\tapi"
+powershell -ExecutionPolicy Bypass -File .\scripts\phase3-validate-10000.ps1
+```
+
+Nota importante para la corrida grande:
+- el endpoint externo de prueba (`httpbin`) no sostuvo una separacion perfecta entre `400` planeados y `5xx` reales bajo esta carga
+- por eso, para `random-large`, el criterio correcto de aceptacion no es exigir el split exacto `400` vs `503`
+- lo que se valida es:
+  - `200` cerrados exactos
+  - total de fallos exacto
+  - `0` registros activos
+  - `0` mensajes visibles/no visibles en la FIFO al cierre
+  - `10000` rows finales en `tapi-results`
+
 ## Estado validado en AWS al 2026-05-01
-La validacion real mas reciente del smoke test de `100` registros sobre el slot `149` dejo este resultado:
+La corrida limpia mas reciente del smoke test de `100` registros sobre el slot `149` dejo este resultado:
 - cola `tapi-provider-queue.fifo`: `0` visibles, `0` no visibles al cierre
-- `tapi-pending-records` para `DATE#2026-05-02#SLOT#149`:
-  - `COMPLETED = 53`
+- `tapi-pending-records` para la seed fresca:
+  - `COMPLETED = 60`
   - `FAILED = 40`
-  - `IN_PROGRESS = 7`
+  - `PENDING = 0`
+  - `IN_PROGRESS = 0`
   - `TOTAL = 100`
-- `tapi-results`: `93` rows finales persistidas para la corrida validada
+- `tapi-idempotency`:
+  - `COMPLETED = 60`
+  - `FAILED = 40`
+  - `IN_PROGRESS = 0`
+- `tapi-results`: `100` rows finales persistidas
+  - `60` con `200`
+  - `20` con `400`
+  - `20` con `503`
 
 Interpretacion operativa:
-- el flujo end-to-end `producer -> SQS FIFO -> Pipe -> Step Functions Express -> consumer -> DynamoDB` quedo probado para `93/100`
-- los `53` exitos y `40` cierres por fallo llegaron a persistencia final
-- la cola dreno por completo, asi que el problema residual ya no es de conexion entre servicios
+- el flujo end-to-end `producer -> SQS FIFO -> Pipe -> Step Functions Express -> consumer -> DynamoDB` quedo validado `100/100` para una seed limpia
+- la nueva state machine cerro correctamente exito, fallo terminal y transitorio agotado
+- la cola dreno por completo y no quedaron items activos en la corrida fresca
 
-Riesgo residual abierto:
-- quedaron `7` items stale en `IN_PROGRESS`
-- esos items no impiden validar el flujo nuevo, pero si impiden declarar cierre perfecto de la corrida
-- la remediacion pendiente es una politica explicita para recovery de `pending`/`idempotency` stale, o bien una limpieza operativa controlada antes de repetir la prueba
+Lectura correcta del incidente anterior:
+- el hallazgo previo de `93/100` con `7` rows en `IN_PROGRESS` correspondia a estado heredado de corridas rotas anteriores
+- esa observacion sigue siendo util como aprendizaje operativo
+- ya no representa el estado actual del runtime nuevo
 
 Lectura correcta del estado actual:
 - la nueva state machine quedo estable para `200`, `400` y `503`
 - la arquitectura de Fase 3 ya corre end-to-end en AWS
-- la deuda restante esta concentrada en recuperacion de estado intermedio viejo, no en routing ni persistencia final
+- la mejora pendiente ya no es corregir routing o cierres basicos, sino endurecer tooling y, si se desea, definir una estrategia formal para stale state heredado
+
+## Corrida de carga validada en AWS al 2026-05-01
+La corrida grande mas reciente de `10000` registros sobre el mismo slot `149` dejo este resultado:
+- seed random generada por loop con `250` proveedores
+- cola `tapi-provider-queue.fifo`: `0` visibles, `0` no visibles al cierre
+- `tapi-pending-records` para la seed fresca:
+  - `COMPLETED = 5983`
+  - `FAILED = 4017`
+  - `PENDING = 0`
+  - `IN_PROGRESS = 0`
+  - `TOTAL = 10000`
+- `tapi-idempotency`:
+  - `COMPLETED = 5983`
+  - `FAILED = 4017`
+  - `IN_PROGRESS = 0`
+- `tapi-results`: `10000` rows finales persistidas
+  - `200 = 5983`
+  - `400 = 1980`
+  - `5xx = 2037`
+
+Interpretacion correcta de la corrida grande:
+- el pipeline end-to-end cerro `10000/10000`
+- la distribucion `400` vs `5xx` no quedo identica al plan porque `httpbin` introdujo variacion en los fallos bajo carga
+- eso no cambia la validacion principal del challenge:
+  - todos los registros cerraron
+  - no quedaron items activos
+  - la FIFO dreno completa
+  - `results` persistio una fila final por item
