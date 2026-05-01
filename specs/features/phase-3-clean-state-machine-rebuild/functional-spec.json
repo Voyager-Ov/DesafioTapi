@@ -1,0 +1,277 @@
+{
+  "feature_id": "phase-3-clean-state-machine-rebuild",
+  "feature_name": "Phase 3 Clean State Machine Rebuild",
+  "document_type": "functional-spec",
+  "version": "0.1.0",
+  "status": "draft",
+  "source_of_truth": [
+    "C:\\github desktop\\tapi\\ARCHITECTURE.md",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-state-machine-refactor\\functional-spec.json",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-state-machine-refactor\\technical-spec.json"
+  ],
+  "product_scope": {
+    "problem_statement": "The current workflow implementation carries redundant branches, inconsistent persistence shapes, and runtime type mismatches that break successful and failure closures after a work item has already been claimed.",
+    "goal": "Replace the current workflow with a new clean state machine that keeps the same business intent but uses a simpler and safer execution model for idempotency, pending lifecycle, consumer invocation, retries, and final closure.",
+    "success_outcomes": [
+      "A successful work item reaches a single stable success closure path without leaving IN_PROGRESS records behind.",
+      "A terminal provider failure reaches a single stable failure closure path without retry.",
+      "A transient provider failure retries and then closes through one stable exhausted-failure path if attempts are consumed.",
+      "An unexpected internal failure closes through an explicit unexpected path instead of being disguised as a provider transient failure.",
+      "The workflow writes operational evidence with one consistent result shape across success and failure.",
+      "The workflow remains simple enough to reason about state by state during manual AWS debugging."
+    ]
+  },
+  "in_scope": [
+    "Rebuild of the Step Functions Express workflow for the current phase-3 runtime.",
+    "Simplification of success, terminal, transient exhausted, timeout, and unexpected closure paths.",
+    "Idempotency claim and duplicate handling semantics.",
+    "Pending record lifecycle transitions from PENDING to IN_PROGRESS to COMPLETED or FAILED.",
+    "Final persistence behavior in tapi-results, tapi-idempotency, and tapi-pending-records.",
+    "Manual debuggability through stable state transitions and deterministic input contracts."
+  ],
+  "out_of_scope": [
+    "Changes to the producer slot-query model.",
+    "Changes to SQS FIFO provider isolation semantics.",
+    "Changes to the scheduler topology of 288 slots.",
+    "Replay tooling, dashboards, or operator UI.",
+    "Changes to the external provider API contract beyond the existing classified consumer behavior."
+  ],
+  "actors": [
+    {
+      "name": "EventBridge Pipe",
+      "description": "Starts one workflow execution per FIFO work item and passes the canonical work item payload."
+    },
+    {
+      "name": "State Machine",
+      "description": "Owns operational lifecycle, retry policy, state transitions, and final closure."
+    },
+    {
+      "name": "Consumer Lambda",
+      "description": "Executes the provider API call and returns or throws business outcomes."
+    },
+    {
+      "name": "Operator",
+      "description": "Debugs failures directly in AWS using workflow input, logs, and DynamoDB state."
+    }
+  ],
+  "user_journeys": [
+    {
+      "id": "journey-01",
+      "name": "Successful work item closes cleanly",
+      "steps": [
+        "A new work item starts execution from the FIFO queue.",
+        "The workflow claims idempotency and moves the pending record to IN_PROGRESS.",
+        "The consumer completes successfully.",
+        "The workflow persists success evidence and closes idempotency and pending state as completed."
+      ]
+    },
+    {
+      "id": "journey-02",
+      "name": "Terminal provider failure closes immediately",
+      "steps": [
+        "A work item starts execution.",
+        "The consumer reports a terminal provider failure.",
+        "The workflow skips retry and routes directly to failure closure.",
+        "The workflow persists failure evidence and marks the work item as failed."
+      ]
+    },
+    {
+      "id": "journey-03",
+      "name": "Transient provider failure exhausts retries and closes",
+      "steps": [
+        "A work item starts execution.",
+        "The consumer reports a retryable provider failure.",
+        "The workflow retries according to the configured backoff behavior.",
+        "If retries are exhausted, the workflow persists exhausted failure evidence and marks the work item as failed."
+      ]
+    },
+    {
+      "id": "journey-04",
+      "name": "Unexpected internal failure is visible as unexpected",
+      "steps": [
+        "A work item starts execution.",
+        "An internal or workflow-level error occurs that is not a classified provider failure.",
+        "The workflow closes through an explicit unexpected path.",
+        "The final evidence clearly distinguishes the failure from provider terminal or transient outcomes."
+      ]
+    },
+    {
+      "id": "journey-05",
+      "name": "Duplicate or stale-claimable work item ends safely",
+      "steps": [
+        "A duplicate or no-longer-claimable work item starts execution.",
+        "The workflow cannot safely claim the logical work item or pending record.",
+        "The workflow ends without making a second provider call."
+      ]
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "uc-01",
+      "title": "Claim one logical work item before business execution",
+      "description": "The workflow must prevent duplicate provider execution for the same logical work item."
+    },
+    {
+      "id": "uc-02",
+      "title": "Advance and close lifecycle state consistently",
+      "description": "The workflow must reflect operational progress in both pending and idempotency records."
+    },
+    {
+      "id": "uc-03",
+      "title": "Differentiate classified provider failures from unexpected failures",
+      "description": "The workflow must preserve the semantic difference between terminal, transient, timeout, and unexpected outcomes."
+    },
+    {
+      "id": "uc-04",
+      "title": "Persist one consistent result contract",
+      "description": "The workflow must write success and failure evidence in a shape that can be read uniformly."
+    },
+    {
+      "id": "uc-05",
+      "title": "Support direct AWS console debugging",
+      "description": "The workflow must remain easy to test manually with one input payload and predictable state transitions."
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "br-01",
+      "rule": "The workflow remains the single owner of operational closure and final persistence."
+    },
+    {
+      "id": "br-02",
+      "rule": "The consumer Lambda remains responsible only for provider execution and classified business outcomes."
+    },
+    {
+      "id": "br-03",
+      "rule": "A work item must be claimed before any provider call is attempted."
+    },
+    {
+      "id": "br-04",
+      "rule": "A duplicate or non-claimable work item must not trigger a second provider execution."
+    },
+    {
+      "id": "br-05",
+      "rule": "Terminal failures must not be retried."
+    },
+    {
+      "id": "br-06",
+      "rule": "Only transient failures may consume the retry policy."
+    },
+    {
+      "id": "br-07",
+      "rule": "Unexpected internal failures must remain distinguishable from provider failures."
+    },
+    {
+      "id": "br-08",
+      "rule": "The final results contract must stay consistent enough to be queried and audited without branch-specific parsing rules."
+    },
+    {
+      "id": "br-09",
+      "rule": "The workflow must avoid leaving pending and idempotency state indefinitely in IN_PROGRESS after a closure attempt."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "fr-01",
+      "title": "Canonical workflow input",
+      "statement": "The new workflow must accept one canonical work item input that can be executed directly from AWS for debugging."
+    },
+    {
+      "id": "fr-02",
+      "title": "Single idempotency claim behavior",
+      "statement": "The workflow must attempt exactly one logical claim before business execution and end safely when the claim cannot be made."
+    },
+    {
+      "id": "fr-03",
+      "title": "Single in-progress transition behavior",
+      "statement": "The workflow must transition an eligible pending record into IN_PROGRESS before invoking the consumer."
+    },
+    {
+      "id": "fr-04",
+      "title": "Explicit success closure",
+      "statement": "The workflow must close successful executions through one success path that persists final evidence and marks the work item completed."
+    },
+    {
+      "id": "fr-05",
+      "title": "Explicit terminal closure",
+      "statement": "The workflow must close terminal failures through one direct failure path without retry."
+    },
+    {
+      "id": "fr-06",
+      "title": "Explicit transient exhausted closure",
+      "statement": "The workflow must close exhausted retry outcomes through one final transient failure path."
+    },
+    {
+      "id": "fr-07",
+      "title": "Explicit unexpected closure",
+      "statement": "The workflow must close unexpected internal failures through a dedicated unexpected path."
+    },
+    {
+      "id": "fr-08",
+      "title": "Consistent persistence contract",
+      "statement": "The workflow must write final result evidence in a uniform shape across success and failure outcomes."
+    },
+    {
+      "id": "fr-09",
+      "title": "No silent stuck closure",
+      "statement": "The workflow must be designed so that a closure-path failure does not silently look like a completed business execution while leaving lifecycle rows stuck in IN_PROGRESS."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "ac-01",
+      "given": "A valid pending work item starts execution",
+      "when": "The workflow runs end to end successfully",
+      "then": "It must invoke the consumer once, persist success evidence, mark idempotency completed, and mark the pending record completed."
+    },
+    {
+      "id": "ac-02",
+      "given": "The consumer reports a terminal failure",
+      "when": "The workflow handles the execution",
+      "then": "It must skip retry, persist terminal failure evidence, and close the work item as failed."
+    },
+    {
+      "id": "ac-03",
+      "given": "The consumer reports a transient failure repeatedly",
+      "when": "Retry attempts are exhausted",
+      "then": "The workflow must persist exhausted transient failure evidence and close the work item as failed."
+    },
+    {
+      "id": "ac-04",
+      "given": "An unexpected internal error occurs",
+      "when": "The workflow closes the execution",
+      "then": "The final evidence must identify the outcome as unexpected rather than terminal or transient provider failure."
+    },
+    {
+      "id": "ac-05",
+      "given": "A duplicate or non-claimable work item starts execution",
+      "when": "The workflow cannot safely claim it",
+      "then": "It must end without invoking the consumer a second time."
+    },
+    {
+      "id": "ac-06",
+      "given": "An operator manually tests the workflow from the AWS console",
+      "when": "They use a real DynamoDB-backed work item payload",
+      "then": "They must be able to tell from the state machine where the execution failed and why."
+    },
+    {
+      "id": "ac-07",
+      "given": "A reviewer compares success and failure results",
+      "when": "They inspect tapi-results",
+      "then": "They must not need branch-specific type assumptions to understand the stored outcome."
+    }
+  ],
+  "assumptions": [
+    "The workflow remains an Express state machine triggered synchronously by EventBridge Pipe.",
+    "The current consumer classification contract remains the source of transient versus terminal provider outcomes.",
+    "Duplicate work items may continue to close as no-op completions rather than explicit business failures, unless the technical design proves that stale-lock recovery must be modeled differently.",
+    "The rebuild may remove or collapse existing intermediate parsing and normalization states if the same functional behavior is preserved more safely."
+  ],
+  "open_questions": [
+    {
+      "id": "oq-01",
+      "question": "Should duplicate-claim detection remain a silent no-op completion, or should stale IN_PROGRESS evidence be surfaced differently if the new technical design can distinguish it safely?",
+      "status": "open"
+    }
+  ]
+}

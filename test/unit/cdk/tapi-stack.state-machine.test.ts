@@ -29,17 +29,38 @@ describe('TapiStack state machine refactor', () => {
       .join('');
 
     expect(definition).toContain('"PersistSuccessResult"');
+    expect(definition).toContain('"BootstrapWorkflowInput"');
     expect(definition).toContain('"ResultPath":"$.consumerResult"');
     expect(definition).toContain('"JitterStrategy":"FULL"');
+    expect(definition).toContain('"workItem.$":"$[0].workItem"');
+    expect(definition).toContain('"workflow.$":"$[0].workflow"');
     expect(definition).toContain('"Parameters":{"recordId.$":"$.workItem.recordId"');
     expect(definition).toContain('"DuplicateWorkItem"');
     expect(definition).toContain('"RollbackIdempotencyLock"');
     expect(definition).toContain('"TerminalApiError"');
+    expect(definition).toContain('"ParseWorkflowErrorEnvelope"');
+    expect(definition).toContain('"ParseWorkflowErrorPayload"');
+    expect(definition).toContain('"RouteClassifiedFailure"');
+    expect(definition).toContain('"NormalizeTerminalFailure"');
+    expect(definition).toContain('"NormalizeTransientExhaustedFailure"');
+    expect(definition).toContain('"PrepareSuccessPersistence"');
+    expect(definition).toContain('"PrepareFailurePersistence"');
     expect(definition).toContain('"$.workItem.recordId"');
     expect(definition).toContain('"Next":"RollbackIdempotencyLock"');
-    expect(definition).toContain('"responseBody":{"S.$":"$.consumerResult.responseBody"}');
-    expect(definition).not.toContain('States.JsonToString');
-    expect(definition).not.toContain('ObjectAt($.consumerResult.responseBody)');
+    expect(definition).toContain('"responseBodyText.$":"$.consumerResult.responseBody"');
+    expect(definition).toContain('"responseBody":{"S.$":"$.persistence.responseBodyText"}');
+    expect(definition).toContain('"statusCode":{"N.$":"$.persistence.statusCodeText"}');
+    expect(definition).toContain('"durationMs":{"N.$":"$.persistence.durationMsText"}');
+    expect(definition).toContain('States.StringToJson');
+    expect(definition).toContain('States.JsonToString');
+    expect(definition).toContain('States.Format');
+    expect(definition).toContain('States.TaskFailed');
+    expect(definition).not.toContain('"PersistTerminalFailureResult"');
+    expect(definition).not.toContain('"PersistExhaustedTransientFailure"');
+    expect(definition).not.toContain('"PersistTimeoutFailure"');
+    expect(definition).not.toContain('"PersistUnexpectedFailure"');
+    expect(definition).not.toContain('"ParseTerminalErrorEnvelope"');
+    expect(definition).not.toContain('"ParseTransientErrorEnvelope"');
     expect(definition).not.toContain('"Payload.$":"$"');
 
     const consumerFunction = Object.values(template.Resources).find(
@@ -47,10 +68,19 @@ describe('TapiStack state machine refactor', () => {
         resource.Type === 'AWS::Lambda::Function'
         && resource.Properties?.FunctionName === 'tapi-consumer',
     );
+    const bootstrapFunction = Object.values(template.Resources).find(
+      (resource) =>
+        resource.Type === 'AWS::Lambda::Function'
+        && resource.Properties?.FunctionName === 'tapi-workflow-bootstrap',
+    );
 
     expect(consumerFunction).toBeDefined();
+    expect(bootstrapFunction).toBeDefined();
     expect(
       (consumerFunction?.Properties?.Environment as { Variables: Record<string, string> }).Variables.RESULTS_TABLE_NAME,
     ).toBeUndefined();
+    expect(stateMachine?.Properties).toMatchObject({
+      StateMachineType: 'EXPRESS',
+    });
   });
 });

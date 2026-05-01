@@ -1,4 +1,4 @@
-import { classifyHttpError } from '../domain/errors/api.errors';
+import { classifyHttpError, TerminalApiError } from '../domain/errors/api.errors';
 import { IProviderApiPort } from '../ports/out-ports';
 import { ProviderApiResult, ProviderRecord } from '../../../shared/types';
 
@@ -11,8 +11,11 @@ export class HttpProviderAdapter implements IProviderApiPort {
   ) {}
 
   async call(record: ProviderRecord): Promise<ProviderApiResult> {
+    this.assertHttpsEndpoint(record.endpoint);
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const startedAt = Date.now();
 
     try {
       const response = await this.fetchFn(record.endpoint, {
@@ -36,7 +39,7 @@ export class HttpProviderAdapter implements IProviderApiPort {
         providerId: record.providerId,
         statusCode: response.status,
         responseBody: this.serializeResponseBody(rawBody),
-        durationMs: 0,
+        durationMs: Date.now() - startedAt,
         processedAt: new Date().toISOString(),
       };
     } catch (error) {
@@ -47,6 +50,23 @@ export class HttpProviderAdapter implements IProviderApiPort {
       throw error;
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private assertHttpsEndpoint(endpoint: string): void {
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(endpoint);
+    } catch {
+      throw new TerminalApiError(400, `Invalid provider endpoint: ${endpoint}`);
+    }
+
+    if (parsedUrl.protocol !== 'https:') {
+      throw new TerminalApiError(
+        400,
+        `Provider endpoint must use HTTPS: ${endpoint}`,
+      );
     }
   }
 

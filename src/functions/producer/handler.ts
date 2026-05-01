@@ -73,6 +73,8 @@ export const handler = async (
 /**
  * Extracts the distributed dispatch contract from the event payload.
  * Supports a `targetDate` override in the event for manual backfill runs.
+ * `targetDateStrategy` is scheduler metadata today; the runtime behavior stays:
+ * explicit `targetDate` wins, otherwise the producer resolves the current UTC day.
  */
 function extractDispatchWindow(event: ScheduledEvent): DispatchWindowInput {
   const payload = event as unknown as Record<string, unknown>;

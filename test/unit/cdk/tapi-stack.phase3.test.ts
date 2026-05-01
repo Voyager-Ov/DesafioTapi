@@ -117,8 +117,14 @@ describe('TapiStack phase 3 foundations', () => {
     const schedules = Object.values(template.Resources).filter(
       (resource) => resource.Type === 'AWS::Scheduler::Schedule',
     );
+    const schedulerDlq = Object.values(template.Resources).find(
+      (resource) =>
+        resource.Type === 'AWS::SQS::Queue'
+        && resource.Properties?.QueueName === 'tapi-scheduler-dlq',
+    );
 
     expect(schedules).toHaveLength(288);
+    expect(schedulerDlq).toBeDefined();
 
     const firstSchedule = schedules.find(
       (resource) => resource.Properties?.Name === 'tapi-dispatch-slot-000',
@@ -141,18 +147,101 @@ describe('TapiStack phase 3 foundations', () => {
     expect(firstSchedule?.Properties?.Target).toMatchObject({
       Input: JSON.stringify({
         source: 'tapi.distributed-dispatch',
-        version: '1.0',
         slotId: 0,
         slotsPerDay: 288,
+        targetDateStrategy: 'today-utc-by-default',
       }),
+      RetryPolicy: {
+        MaximumEventAgeInSeconds: 3600,
+        MaximumRetryAttempts: 3,
+      },
+      DeadLetterConfig: expect.any(Object),
     });
     expect(lastSchedule?.Properties?.Target).toMatchObject({
       Input: JSON.stringify({
         source: 'tapi.distributed-dispatch',
-        version: '1.0',
         slotId: 287,
         slotsPerDay: 288,
+        targetDateStrategy: 'today-utc-by-default',
       }),
+      RetryPolicy: {
+        MaximumEventAgeInSeconds: 3600,
+        MaximumRetryAttempts: 3,
+      },
+      DeadLetterConfig: expect.any(Object),
     });
+    expect(firstSchedule?.Properties?.Target).toHaveProperty('DeadLetterConfig.Arn');
+    expect(lastSchedule?.Properties?.Target).toHaveProperty('DeadLetterConfig.Arn');
+  });
+
+  it('grants the scheduler role permission to invoke the producer and send messages to the scheduler DLQ', () => {
+    const app = new cdk.App();
+    const stack = new TapiStack(app, 'TestTapiStackPhase3SchedulerIam', {
+      env: {
+        account: '123456789012',
+        region: 'us-east-1',
+      },
+    });
+
+    const assembly = app.synth();
+    const template = assembly.getStackArtifact(stack.artifactId).template as {
+      Resources: Record<string, { Type: string; Properties?: Record<string, unknown> }>;
+    };
+
+    const policies = Object.values(template.Resources).filter(
+      (resource) => resource.Type === 'AWS::IAM::Policy',
+    );
+    const schedulerPolicy = policies.find((resource) =>
+      JSON.stringify(resource.Properties?.PolicyName ?? '').includes('TapiSchedulerRoleDefaultPolicy'),
+    );
+
+    expect(schedulerPolicy).toBeDefined();
+
+    const policyJson = JSON.stringify(
+      (schedulerPolicy?.Properties?.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement,
+    );
+
+    expect(policyJson).toContain('lambda:InvokeFunction');
+    expect(policyJson).toContain('sqs:SendMessage');
+    expect(policyJson).toContain('TapiSchedulerDLQ');
+  });
+
+  it('replaces the SQS-consuming orchestrator with an EventBridge Pipe into Step Functions', () => {
+    const app = new cdk.App();
+    const stack = new TapiStack(app, 'TestTapiStackPhase3Pipe', {
+      env: {
+        account: '123456789012',
+        region: 'us-east-1',
+      },
+    });
+
+    const assembly = app.synth();
+    const template = assembly.getStackArtifact(stack.artifactId).template as {
+      Resources: Record<string, { Type: string; Properties?: Record<string, unknown> }>;
+    };
+
+    const pipe = Object.values(template.Resources).find(
+      (resource) => resource.Type === 'AWS::Pipes::Pipe',
+    );
+    expect(pipe).toBeDefined();
+    expect(pipe?.Properties).toMatchObject({
+      Name: 'tapi-provider-pipe',
+      DesiredState: 'RUNNING',
+      SourceParameters: {
+        SqsQueueParameters: {
+          BatchSize: 1,
+        },
+      },
+      TargetParameters: {
+        StepFunctionStateMachineParameters: {
+          InvocationType: 'REQUEST_RESPONSE',
+        },
+      },
+    });
+
+    const eventSourceMappings = Object.values(template.Resources).filter(
+      (resource) => resource.Type === 'AWS::Lambda::EventSourceMapping',
+    );
+    expect(eventSourceMappings).toHaveLength(0);
   });
 });

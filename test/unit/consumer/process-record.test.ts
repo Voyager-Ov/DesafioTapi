@@ -88,6 +88,10 @@ describe('ProcessProviderRecordUseCase', () => {
 
       const error = await useCase.execute(makeRecord()).catch((e) => e);
       expect((error as Error).name).toBe('TransientApiError');
+      expect(JSON.parse((error as Error).message)).toMatchObject({
+        statusCode: 429,
+        category: 'TRANSIENT',
+      });
     });
   });
 
@@ -110,26 +114,46 @@ describe('ProcessProviderRecordUseCase', () => {
 
       const error = await useCase.execute(makeRecord()).catch((e) => e);
       expect((error as Error).name).toBe('TerminalApiError');
+      expect(JSON.parse((error as Error).message)).toMatchObject({
+        statusCode: 403,
+        category: 'TERMINAL',
+      });
     });
   });
 
-  describe('ERROR INESPERADO - bugs, timeouts de red', () => {
-    it('convierte errores genericos en TransientApiError para no perder el trabajo', async () => {
+  describe('ERROR INESPERADO - bugs, fallos internos no clasificados', () => {
+    it('propaga errores genericos sin reclasificarlos como TransientApiError', async () => {
       const useCase = new ProcessProviderRecordUseCase(
         new FakeProviderApi(new Error('ECONNRESET')),
       );
 
-      const error = await useCase.execute(makeRecord()).catch((e) => e);
-      expect((error as Error).name).toBe('TransientApiError');
+      await expect(useCase.execute(makeRecord())).rejects.toThrow('ECONNRESET');
+      await expect(useCase.execute(makeRecord())).rejects.not.toBeInstanceOf(TransientApiError);
     });
 
-    it('incluye el mensaje original en el error envuelto', async () => {
+    it('preserva el mensaje original para que Step Functions lo normalice como UNEXPECTED', async () => {
       const useCase = new ProcessProviderRecordUseCase(
         new FakeProviderApi(new Error('Connection refused')),
       );
 
-      const error = await useCase.execute(makeRecord()).catch((e) => e) as TransientApiError;
+      const error = await useCase.execute(makeRecord()).catch((e) => e) as Error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe('Error');
       expect(error.message).toContain('Connection refused');
+    });
+
+    it('normaliza fallos no-Error a Error generico', async () => {
+      const useCase = new ProcessProviderRecordUseCase(
+        {
+          async call(): Promise<ProviderApiResult> {
+            throw 'boom';
+          },
+        },
+      );
+
+      const error = await useCase.execute(makeRecord()).catch((e) => e) as Error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('Unexpected non-error failure');
     });
   });
 });
@@ -143,6 +167,10 @@ describe('classifyHttpError', () => {
       const error = classifyHttpError(statusCode, 'body');
       expect(error).toBeInstanceOf(TransientApiError);
       expect(error.statusCode).toBe(statusCode);
+      expect(JSON.parse(error.message)).toMatchObject({
+        statusCode,
+        category: 'TRANSIENT',
+      });
     },
   );
 
@@ -151,6 +179,10 @@ describe('classifyHttpError', () => {
     (statusCode) => {
       const error = classifyHttpError(statusCode, 'body');
       expect(error).toBeInstanceOf(TerminalApiError);
+      expect(JSON.parse(error.message)).toMatchObject({
+        statusCode,
+        category: 'TERMINAL',
+      });
     },
   );
 });

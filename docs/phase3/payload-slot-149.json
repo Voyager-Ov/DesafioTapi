@@ -1,7 +1,7 @@
 {
   "source": "manual.phase3.validation",
-  "version": "1.0",
   "slotId": 149,
   "slotsPerDay": 288,
+  "targetDateStrategy": "manual-target-date",
   "targetDate": "2026-04-30"
 }

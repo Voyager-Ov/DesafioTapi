@@ -1,0 +1,438 @@
+{
+  "feature_id": "final-architecture-remediation",
+  "feature_name": "Final Architecture Remediation",
+  "document_type": "technical-spec",
+  "version": "0.1.0",
+  "status": "draft",
+  "source_of_truth": [
+    "C:\\github desktop\\tapi\\specs\\features\\final-architecture-remediation\\functional-spec.json",
+    "C:\\github desktop\\tapi\\goal.txt",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-state-machine-refactor\\technical-spec.json",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-3-scalability-and-distribution\\technical-spec.json"
+  ],
+  "architecture": {
+    "goal": "Remediate the final behavioral and documentation gaps by preserving distributed daily dispatch, replacing the queue-to-workflow bridge with an ordered synchronous path, tightening retry semantics, preserving real provider failure evidence, and making dispatch-slot metadata productive instead of test-only.",
+    "runtime_shape": [
+      "EventBridge Scheduler continues invoking Producer Lambda across 288 dispatch slots.",
+      "Producer Lambda continues querying one dispatch-slot partition and publishing one FIFO message per work item with MessageGroupId bound to provider identity.",
+      "EventBridge Pipe consumes the SQS FIFO queue directly and invokes the Step Functions workflow synchronously so the message remains in-flight until the workflow closes.",
+      "The Step Functions workflow is converted to Express workflow type and remains the owner of idempotency, lifecycle transitions, retries, and final persistence.",
+      "Consumer Lambda remains the business execution boundary for the provider API call, but now throws structured classified errors whose cause payload can be parsed by the workflow.",
+      "Pending-record writers become the authoritative producers of dispatchSlot, dispatchSlotPk, and dispatchSortKey during productive record creation.",
+      "A root-level ARCHITECTURE.md explains the final architecture, decisions, and traceability to challenge requirements."
+    ],
+    "explicit_non_goals": [
+      "Changing the producer queue message contract beyond what is needed for Pipe input compatibility.",
+      "Changing business payload semantics sent to providers.",
+      "Adding operator UI, replay tooling, or production observability dashboards.",
+      "Manual shuffle-sharding beyond the existing FIFO High Throughput posture.",
+      "Rewriting the distributed slot scheduling model introduced in phase 3."
+    ],
+    "operational_constraints": [
+      "The pipe uses an ordered FIFO source and must process one work item at a time per message group.",
+      "The pipe invokes Step Functions with REQUEST_RESPONSE semantics, which requires an Express workflow.",
+      "The pipe execution budget is finite, so one queue message maps to one workflow input and one provider execution path.",
+      "The queue message body must remain small enough for Step Functions payload limits after Pipe transformation."
+    ]
+  },
+  "module_boundaries": [
+    {
+      "module": "Producer Lambda",
+      "responsibility": "Keep slot-based query and FIFO enqueue behavior unchanged, including MessageGroupId and deduplication id ownership."
+    },
+    {
+      "module": "EventBridge Pipe",
+      "responsibility": "Replace Orchestrator Lambda as the queue consumer and synchronously bridge one FIFO message into one Step Functions execution while preserving ordered source semantics."
+    },
+    {
+      "module": "Step Functions Express Workflow",
+      "responsibility": "Own the complete operational lifecycle for one work item, including retry classification, error normalization, persistence, and final success/failure closure."
+    },
+    {
+      "module": "Consumer Lambda",
+      "responsibility": "Execute the provider API call and emit either a success payload or a classified structured error without writing persistence state."
+    },
+    {
+      "module": "Pending Record Write Path",
+      "responsibility": "Materialize dispatch-slot routing metadata as part of productive record creation or persistence."
+    },
+    {
+      "module": "Architecture Documentation",
+      "responsibility": "Expose the final system diagram, rationale, and requirement-to-solution mapping for reviewers."
+    }
+  ],
+  "interfaces_and_contracts": [
+    {
+      "name": "QueueMessageContract",
+      "purpose": "Logical work-item payload published by Producer Lambda and consumed through EventBridge Pipe.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "endpoint": "string",
+        "httpMethod": "GET | POST | PUT | PATCH",
+        "payload": "Record<string, unknown> | undefined",
+        "headers": "Record<string, string> | undefined",
+        "scheduledDate": "YYYY-MM-DD",
+        "status": "PENDING"
+      },
+      "compatibility_rule": "This message shape remains unchanged from phase 3. The Pipe transforms transport envelope data into the workflow input without changing producer behavior."
+    },
+    {
+      "name": "PipeToWorkflowInput",
+      "purpose": "Canonical workflow input built by EventBridge Pipe for one queue message.",
+      "shape": {
+        "workItem": "QueueMessageContract",
+        "workflow.idempotencyTtl": "string numeric unix epoch seconds",
+        "workflow.resultsTtl": "string numeric unix epoch seconds",
+        "workflow.transport.source": "eventbridge-pipe",
+        "workflow.transport.messageId": "original SQS message id"
+      },
+      "note": "TTL values are injected through pipe input transformation or a preparatory workflow step rather than by a Lambda orchestrator."
+    },
+    {
+      "name": "ConsumerSuccessResult",
+      "purpose": "Successful provider outcome returned from the consumer task.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "statusCode": "number",
+        "responseBody": "string",
+        "durationMs": "number",
+        "processedAt": "ISO-8601 timestamp"
+      }
+    },
+    {
+      "name": "ConsumerFailureCause",
+      "purpose": "Structured error payload that the workflow can parse after catch.",
+      "shape": {
+        "statusCode": "number",
+        "message": "string",
+        "category": "TERMINAL | TRANSIENT",
+        "providerId": "string",
+        "recordId": "string"
+      },
+      "serialization_rule": "The consumer error cause must be serializable as JSON text so Step Functions can parse it with States.StringToJson on $.workflowError.Cause."
+    },
+    {
+      "name": "PendingRecordDispatchMetadata",
+      "purpose": "Routing metadata required by phase-3 slot-based dispatch and now owned by productive writes.",
+      "shape": {
+        "dispatchDate": "YYYY-MM-DD",
+        "dispatchSlot": "number in range [0, 287]",
+        "dispatchSlotPk": "DATE#<YYYY-MM-DD>#SLOT#<zero-padded-slot>",
+        "dispatchSortKey": "PROVIDER#<providerId>#RECORD#<recordId>"
+      }
+    }
+  ],
+  "data_model_and_access_patterns": {
+    "pending_records_write_pattern": [
+      "Any productive writer that creates a pending work item must compute dispatch metadata before persisting the item.",
+      "The routing algorithm remains stable-hash modulo slots per day using recordId + providerId + scheduledDate.",
+      "Writers persist dispatchDate, dispatchSlot, dispatchSlotPk, and dispatchSortKey on the base pending-record item.",
+      "Existing test seeds remain valid but no longer represent the only source of dispatch metadata."
+    ],
+    "pending_records_read_pattern": [
+      "Producer Lambda continues querying dispatch-slot-index by dispatchSlotPk for one date-slot partition at a time.",
+      "No runtime scan or enrichment job is introduced for slot metadata."
+    ],
+    "results_persistence_rule": [
+      "Success paths continue persisting the exact provider status code returned in the success payload.",
+      "Terminal and exhausted transient failure paths persist the real provider status code extracted from parsed error cause payload.",
+      "Synthetic placeholders such as fixed 400 or 504 are forbidden when the real provider status code is available."
+    ],
+    "idempotency_rule": [
+      "The existing idempotency table remains the authoritative duplicate guard.",
+      "Duplicate or already-claimed work still closes without writing a new final result row."
+    ]
+  },
+  "pipe_and_workflow_strategy": {
+    "pipe_configuration": {
+      "source": "tapi-provider-queue.fifo",
+      "source_batch_size": 1,
+      "ordering_model": "FIFO message group ordering preserved by ordered source semantics",
+      "target": "tapi-consumer-state-machine",
+      "target_invocation_type": "REQUEST_RESPONSE",
+      "workflow_type": "EXPRESS",
+      "retry_posture": "Pipe-level retries rely on source visibility timeout and source redrive policy rather than replacing workflow business retries."
+    },
+    "workflow_refactor": {
+      "previous_bridge": "Orchestrator Lambda using StartExecution asynchronously",
+      "new_bridge": "EventBridge Pipe invoking Express workflow synchronously",
+      "why": [
+        "Preserve same-provider serialization until the workflow actually finishes.",
+        "Remove the queue acknowledgement gap created by asynchronous StartExecution.",
+        "Reduce one custom runtime hop and move transport concerns into native AWS infrastructure."
+      ]
+    },
+    "workflow_bootstrap": {
+      "strategy": "Introduce an initial state or transformation path that derives workflow TTL values without requiring the removed Orchestrator Lambda.",
+      "allowed_shapes": [
+        "Pipe input transformer injects precomputed TTL-like strings only if supported cleanly.",
+        "Otherwise, an initial workflow step computes operational timestamps before idempotency and persistence tasks."
+      ],
+      "default_choice": "The workflow itself computes missing TTL metadata in an initial normalization step if Pipe transformation cannot do it without brittle time math."
+    }
+  },
+  "state_machine_definition": {
+    "workflow_style": "Express Workflow",
+    "context_preservation_rule": "The workflow root keeps workItem and workflow metadata intact throughout execution. Consumer success output is stored under a dedicated result node and caught failures are normalized under a dedicated error node.",
+    "required_states_or_responsibilities": [
+      {
+        "name": "NormalizeWorkflowInput",
+        "responsibility": "Ensure TTL strings and transport metadata are present after Pipe delivery and before operational tasks."
+      },
+      {
+        "name": "AcquireIdempotencyLock",
+        "responsibility": "Claim the logical work item before business execution."
+      },
+      {
+        "name": "MarkPendingInProgress",
+        "responsibility": "Advance pending lifecycle from PENDING to IN_PROGRESS."
+      },
+      {
+        "name": "InvokeConsumerLambda",
+        "responsibility": "Execute the provider API call using workItem only."
+      },
+      {
+        "name": "NormalizeWorkflowError",
+        "responsibility": "Parse workflowError.Cause with States.StringToJson and project a stable error payload for persistence."
+      },
+      {
+        "name": "PersistSuccessResult",
+        "responsibility": "Persist successful final outcome to tapi-results."
+      },
+      {
+        "name": "PersistTerminalFailureResult",
+        "responsibility": "Persist terminal failure outcome using parsed real provider status code."
+      },
+      {
+        "name": "PersistExhaustedTransientFailure",
+        "responsibility": "Persist exhausted transient failure outcome using parsed real provider status code."
+      },
+      {
+        "name": "MarkIdempotencyCompletedOrFailed",
+        "responsibility": "Close idempotency record consistently for final paths."
+      },
+      {
+        "name": "MarkPendingCompletedOrFailed",
+        "responsibility": "Close pending record lifecycle consistently for final paths."
+      },
+      {
+        "name": "DuplicateWorkItem",
+        "responsibility": "Finish duplicate or no-longer-claimable work as a no-op completion."
+      }
+    ],
+    "retry_policy": {
+      "target_state": "InvokeConsumerLambda",
+      "allowed_retry_errors": [
+        "TransientApiError",
+        "States.Timeout"
+      ],
+      "forbidden_retry_errors": [
+        "States.TaskFailed",
+        "TerminalApiError"
+      ],
+      "parameters": {
+        "intervalSeconds": 2,
+        "backoffRate": 2.0,
+        "maxAttempts": 3,
+        "jitterStrategy": "FULL"
+      }
+    },
+    "catch_policy": [
+      {
+        "errors": [
+          "TerminalApiError"
+        ],
+        "resultPath": "$.workflowError",
+        "next": "NormalizeWorkflowErrorThenPersistTerminal"
+      },
+      {
+        "errors": [
+          "TransientApiError",
+          "States.Timeout"
+        ],
+        "resultPath": "$.workflowError",
+        "next": "NormalizeWorkflowErrorThenPersistExhausted"
+      },
+      {
+        "errors": [
+          "States.ALL"
+        ],
+        "resultPath": "$.workflowError",
+        "next": "NormalizeWorkflowErrorThenPersistExhausted"
+      }
+    ],
+    "result_persistence_requirements": [
+      "Persisted failure rows must include providerId, recordId, processedAt, ttl, category, and parsed statusCode.",
+      "The responseBody or error payload persisted in DynamoDB must be DynamoDB-friendly and stable enough for audit.",
+      "Success path and failure paths must leave enough evidence to diagnose the exact provider response category."
+    ]
+  },
+  "consumer_error_contract": {
+    "classification_rule": [
+      "HTTP 429, 502, 503, and 504 remain transient.",
+      "HTTP 400, 401, 403, 404, 422, and similar business/request failures remain terminal.",
+      "Unexpected generic errors are still wrapped as transient unless a stronger classification signal is introduced."
+    ],
+    "throwing_rule": [
+      "When the provider adapter classifies a failure, the thrown error must include the real provider statusCode.",
+      "The serialized cause payload must contain both the real statusCode and the human-readable message.",
+      "The error name remains the routing signal for Step Functions retry/catch logic."
+    ]
+  },
+  "documentation_deliverables": {
+    "file": "C:\\github desktop\\tapi\\ARCHITECTURE.md",
+    "required_sections": [
+      "High-level summary of the final runtime architecture.",
+      "Mermaid diagram from Scheduler to Producer to SQS FIFO to EventBridge Pipe to Step Functions Express to Consumer and DynamoDB tables.",
+      "Decision rationale for replacing Orchestrator Lambda with EventBridge Pipe.",
+      "Decision rationale for precise retry/catch handling and structured failure persistence.",
+      "Decision rationale for productive dispatch-slot materialization at pending-record creation time.",
+      "Traceability matrix mapping challenge requirements to solution behaviors and repository evidence."
+    ]
+  },
+  "failure_modes_and_edge_handling": [
+    {
+      "case": "A same-provider message is available while the previous one is still executing",
+      "handling": "The FIFO ordered source and synchronous Pipe target invocation keep the next message blocked until the prior workflow completes."
+    },
+    {
+      "case": "A terminal provider error occurs",
+      "handling": "The workflow skips retries, parses the real error payload, persists terminal evidence, and closes lifecycle state as FAILED."
+    },
+    {
+      "case": "A transient provider error occurs repeatedly",
+      "handling": "The workflow retries with exponential backoff and full jitter, then persists exhausted transient evidence with the real provider status code if retries are exhausted."
+    },
+    {
+      "case": "The error payload cannot be parsed as JSON",
+      "handling": "Fallback normalization stores the raw cause string and marks the statusCode as unavailable only when the real code truly cannot be recovered."
+    },
+    {
+      "case": "A new pending record is inserted without dispatch metadata",
+      "handling": "Forbidden by design after remediation. Productive writers must always materialize slot metadata."
+    },
+    {
+      "case": "The workflow exceeds the practical execution budget of the Pipe/Express path",
+      "handling": "The implementation must reduce per-item execution time or timeout settings before rollout; the remediation does not support long-running per-item workflows."
+    }
+  ],
+  "dependency_and_library_decisions": [
+    {
+      "decision": "Use EventBridge Pipe as the direct SQS consumer and remove Orchestrator Lambda from runtime.",
+      "rationale": "This eliminates the asynchronous acknowledgement gap that allowed same-provider concurrency leakage."
+    },
+    {
+      "decision": "Convert the workflow to Express type.",
+      "rationale": "Synchronous Pipe invocation into Step Functions requires REQUEST_RESPONSE, which is available for Express workflows."
+    },
+    {
+      "decision": "Keep Consumer Lambda as pure business execution without direct DynamoDB writes.",
+      "rationale": "The workflow remains the operational owner of persistence and retry semantics."
+    },
+    {
+      "decision": "Keep slot routing algorithm stable and move its ownership to productive writes.",
+      "rationale": "This preserves the defendable phase-3 access pattern without a new enrichment subsystem."
+    },
+    {
+      "decision": "Add root-level architecture documentation instead of scattering final rationale across phase docs only.",
+      "rationale": "The challenge is evaluated on architectural clarity, not only on code presence."
+    }
+  ],
+  "testing_strategy": {
+    "quality_gates": [
+      "TypeScript build passes.",
+      "CDK synth reflects EventBridge Pipe, Express workflow type, and removal of the SQS-consuming Orchestrator Lambda from runtime.",
+      "Unit tests prove retry semantics no longer include States.TaskFailed.",
+      "Unit tests prove failure persistence uses parsed dynamic provider status codes.",
+      "Unit tests prove productive pending-record writes materialize dispatch-slot metadata.",
+      "Documentation deliverable exists and maps requirements to solution decisions."
+    ],
+    "expected_test_scenarios": [
+      "CDK template contains an AWS::Pipes::Pipe from the provider FIFO queue to the consumer state machine with REQUEST_RESPONSE semantics.",
+      "CDK template defines the workflow as EXPRESS and preserves CloudWatch logging.",
+      "State machine definition retries TransientApiError and States.Timeout only.",
+      "State machine definition catches TerminalApiError directly into terminal persistence path.",
+      "Consumer adapter or use case serializes real provider status codes into error cause payloads.",
+      "Terminal persistence path stores 401/403/404 exactly when those provider failures occur.",
+      "Exhausted transient persistence path stores 429/502/503 exactly when those provider failures are exhausted.",
+      "Pending-record writer computes dispatchSlotPk and dispatchSortKey deterministically for new items.",
+      "Producer tests remain green for MessageGroupId, deduplication id, and slot-partition querying behavior."
+    ]
+  },
+  "phased_implementation_plan": [
+    {
+      "phase": "runtime-bridge-remediation",
+      "goal": "Replace the asynchronous Orchestrator Lambda bridge with an ordered synchronous native bridge.",
+      "tasks": [
+        "Remove the SQS event source mapping and runtime dependency on Orchestrator Lambda.",
+        "Add EventBridge Pipe configuration in CDK from FIFO queue to Step Functions.",
+        "Convert the workflow to Express type and preserve logging configuration.",
+        "Normalize the workflow input shape so the removed orchestrator does not leave missing metadata."
+      ],
+      "dependencies": [
+        "Approved functional-spec.json for final-architecture-remediation"
+      ],
+      "definition_of_done": [
+        "No runtime queue consumer lambda remains between SQS FIFO and Step Functions.",
+        "Same-provider ordered source messages remain blocked until workflow completion."
+      ]
+    },
+    {
+      "phase": "retry-and-audit-remediation",
+      "goal": "Correct retry specificity and persist accurate provider failure evidence.",
+      "tasks": [
+        "Tighten retry policy to transient errors only.",
+        "Add workflow error normalization for parsed JSON causes.",
+        "Update terminal and exhausted persistence states to use dynamic parsed status codes.",
+        "Update consumer error construction to preserve the real provider status code."
+      ],
+      "dependencies": [
+        "runtime-bridge-remediation"
+      ],
+      "definition_of_done": [
+        "Terminal errors are fail-fast.",
+        "Persisted failure results preserve the real provider status code."
+      ]
+    },
+    {
+      "phase": "productive-slot-ownership",
+      "goal": "Make dispatch-slot metadata part of the productive data model rather than test-only data.",
+      "tasks": [
+        "Identify or introduce the productive pending-record writer boundary.",
+        "Compute dispatchSlot, dispatchSlotPk, and dispatchSortKey at write time.",
+        "Add tests proving deterministic slot materialization for newly created items."
+      ],
+      "dependencies": [
+        "Approved functional-spec.json for final-architecture-remediation"
+      ],
+      "definition_of_done": [
+        "New pending records are immediately compatible with phase-3 distributed dispatch."
+      ]
+    },
+    {
+      "phase": "final-architecture-documentation",
+      "goal": "Deliver reviewer-ready architecture and traceability artifacts.",
+      "tasks": [
+        "Create ARCHITECTURE.md with Mermaid diagram and narrative.",
+        "Map each challenge requirement to the concrete runtime component or behavior that satisfies it.",
+        "Link or reference the validating tests and infrastructure evidence where appropriate."
+      ],
+      "dependencies": [
+        "runtime-bridge-remediation",
+        "retry-and-audit-remediation",
+        "productive-slot-ownership"
+      ],
+      "definition_of_done": [
+        "A reviewer can understand and defend the final repository without reconstructing the architecture from code alone."
+      ]
+    }
+  ],
+  "assumptions": [
+    "One queue message continues to represent exactly one logical provider work item.",
+    "Per-item workflow duration can stay within the operational limits of the Pipe plus Express workflow path.",
+    "The repository either already has or will accept a productive pending-record write boundary where dispatch metadata can be computed.",
+    "Backward compatibility with old seed-only routing data is not required beyond keeping existing tests and docs coherent."
+  ]
+}

@@ -27,6 +27,16 @@ export interface DispatchSlotMetadata {
 
 export interface PendingDispatchRecord extends ProviderRecord, DispatchSlotMetadata {}
 
+export interface PendingRecordWriteInput extends ProviderRecord {
+  readonly ttl?: number;
+}
+
+export interface PendingRecordItem extends PendingDispatchRecord {
+  readonly PK: string;
+  readonly SK: string;
+  readonly ttl?: number;
+}
+
 export type RecordStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
 
 /** Message sent to SQS FIFO. One message = one ProviderRecord. */
@@ -51,6 +61,8 @@ export interface ProviderApiResult {
 export interface WorkflowMetadata {
   readonly idempotencyTtl: string;
   readonly resultsTtl: string;
+  readonly sourceMessageId?: string;
+  readonly sourceIngestedAt?: string;
 }
 
 export interface ConsumerWorkflowInput {

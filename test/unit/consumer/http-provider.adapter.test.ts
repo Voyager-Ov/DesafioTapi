@@ -40,6 +40,7 @@ describe('HttpProviderAdapter', () => {
     );
     expect(result.statusCode).toBe(200);
     expect(result.responseBody).toBe('{"ok":true}');
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it('returns plain text responses unchanged', async () => {
@@ -76,7 +77,13 @@ describe('HttpProviderAdapter', () => {
     });
     const adapter = new HttpProviderAdapter(15000, fetchMock as never);
 
-    await expect(adapter.call(makeRecord())).rejects.toBeInstanceOf(TransientApiError);
+    const error = await adapter.call(makeRecord()).catch((caught: unknown) => caught) as TransientApiError;
+
+    expect(error).toBeInstanceOf(TransientApiError);
+    expect(JSON.parse(error.message)).toMatchObject({
+      statusCode: 503,
+      category: 'TRANSIENT',
+    });
   });
 
   it('classifies 400 responses as TerminalApiError', async () => {
@@ -87,7 +94,29 @@ describe('HttpProviderAdapter', () => {
     });
     const adapter = new HttpProviderAdapter(15000, fetchMock as never);
 
-    await expect(adapter.call(makeRecord())).rejects.toBeInstanceOf(TerminalApiError);
+    const error = await adapter.call(makeRecord()).catch((caught: unknown) => caught) as TerminalApiError;
+
+    expect(error).toBeInstanceOf(TerminalApiError);
+    expect(JSON.parse(error.message)).toMatchObject({
+      statusCode: 400,
+      category: 'TERMINAL',
+    });
+  });
+
+  it('rejects insecure HTTP endpoints before issuing the request', async () => {
+    const fetchMock = jest.fn();
+    const adapter = new HttpProviderAdapter(15000, fetchMock as never);
+
+    const error = await adapter.call(
+      makeRecord({ endpoint: 'http://api.example.com/resource' }),
+    ).catch((caught: unknown) => caught) as TerminalApiError;
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(TerminalApiError);
+    expect(JSON.parse(error.message)).toMatchObject({
+      statusCode: 400,
+      category: 'TERMINAL',
+    });
   });
 
   it('converts timeout into TransientApiError', async () => {
