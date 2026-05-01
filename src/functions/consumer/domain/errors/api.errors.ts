@@ -16,7 +16,7 @@ export class TransientApiError extends Error {
   public readonly statusCode: number;
 
   constructor(statusCode: number, message: string) {
-    super(message);
+    super(serializeApiErrorPayload(statusCode, message, 'TRANSIENT'));
     this.statusCode = statusCode;
     // Fix prototype chain (necesario cuando se extiende Error en TypeScript)
     Object.setPrototypeOf(this, TransientApiError.prototype);
@@ -28,7 +28,7 @@ export class TerminalApiError extends Error {
   public readonly statusCode: number;
 
   constructor(statusCode: number, message: string) {
-    super(message);
+    super(serializeApiErrorPayload(statusCode, message, 'TERMINAL'));
     this.statusCode = statusCode;
     Object.setPrototypeOf(this, TerminalApiError.prototype);
   }
@@ -59,3 +59,15 @@ export function classifyHttpError(
 
 // 429 Too Many Requests, 503 Service Unavailable, 502 Bad Gateway, 504 Gateway Timeout
 const TRANSIENT_CODES = new Set([429, 502, 503, 504]);
+
+function serializeApiErrorPayload(
+  statusCode: number,
+  message: string,
+  category: 'TRANSIENT' | 'TERMINAL',
+): string {
+  return JSON.stringify({
+    statusCode,
+    message,
+    category,
+  });
+}

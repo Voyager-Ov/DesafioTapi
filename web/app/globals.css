@@ -1,0 +1,341 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0f14;
+  --bg-elevated: rgba(15, 23, 34, 0.86);
+  --bg-soft: rgba(20, 30, 42, 0.72);
+  --border: rgba(145, 170, 196, 0.18);
+  --border-strong: rgba(145, 170, 196, 0.3);
+  --text: #ecf4ff;
+  --muted: #99a8b9;
+  --accent: #57d6c9;
+  --accent-2: #ffb84d;
+  --danger: #ff6b6b;
+  --success: #73df9d;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --font-sans: "Aptos", "Segoe UI", "Trebuchet MS", sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Mono", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(87, 214, 201, 0.18), transparent 35%),
+    radial-gradient(circle at top right, rgba(255, 184, 77, 0.14), transparent 32%),
+    linear-gradient(180deg, #0a0f14 0%, #070b10 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: var(--font-sans);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 100%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 100%),
+    linear-gradient(180deg, rgba(10, 15, 20, 0.94), rgba(7, 11, 16, 0.98));
+  background-size: 48px 48px, 48px 48px, auto;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.page-shell {
+  width: min(1240px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 40px 0 56px;
+}
+
+.hero {
+  display: grid;
+  gap: 20px;
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, rgba(18, 26, 37, 0.92), rgba(12, 18, 26, 0.9));
+  box-shadow: var(--shadow);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--accent);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(36px, 6vw, 70px);
+  line-height: 0.96;
+  letter-spacing: -0.06em;
+}
+
+.subtitle {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.button {
+  border: 0;
+  border-radius: 999px;
+  padding: 13px 18px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button-primary {
+  color: #051015;
+  background: linear-gradient(135deg, var(--accent), #8df0d7);
+  box-shadow: 0 12px 30px rgba(87, 214, 201, 0.22);
+}
+
+.button-secondary {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(320px, 0.72fr);
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 0;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #d6e4f3;
+}
+
+.panel-body {
+  padding: 20px;
+}
+
+.steps {
+  display: grid;
+  gap: 12px;
+}
+
+.step {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+
+.step-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.step-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.step-command {
+  margin: 0;
+  font-family: var(--font-mono);
+  color: #d9f1ff;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid var(--border);
+}
+
+.badge[data-status='pending'] {
+  color: #ced8e6;
+}
+
+.badge[data-status='running'] {
+  color: var(--accent);
+  border-color: rgba(87, 214, 201, 0.36);
+  background: rgba(87, 214, 201, 0.08);
+}
+
+.badge[data-status='passed'] {
+  color: var(--success);
+  border-color: rgba(115, 223, 157, 0.34);
+  background: rgba(115, 223, 157, 0.08);
+}
+
+.badge[data-status='failed'] {
+  color: #ffd1d1;
+  border-color: rgba(255, 107, 107, 0.42);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.logbox {
+  min-height: 220px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: #081019;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.log-line {
+  margin: 0;
+}
+
+.grid-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.info-card {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+}
+
+.info-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.info-card p,
+.info-card li {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.info-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+}
+
+.command-list {
+  display: grid;
+  gap: 10px;
+}
+
+.command-chip {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.command-chip code,
+.command-chip pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #dff4ff;
+  white-space: pre-wrap;
+}
+
+.footer-note {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+@media (max-width: 1040px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .page-shell {
+    width: min(100vw - 20px, 1240px);
+    padding-top: 16px;
+  }
+
+  .hero,
+  .panel-body,
+  .panel-header {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero {
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+}

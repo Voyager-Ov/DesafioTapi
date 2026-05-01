@@ -15,11 +15,14 @@ export class ProcessProviderRecordUseCase {
         throw error;
       }
 
-      throw new TransientApiError(
-        0,
-        `Unexpected error processing record ${record.recordId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+      // Unexpected internal/runtime failures must surface as generic errors so
+      // Step Functions can route them through the UNEXPECTED path via States.ALL.
+      if (error instanceof Error) {
+        throw error;
+      }
+
+      throw new Error(
+        `Unexpected non-error failure processing record ${record.recordId}: ${String(error)}`,
       );
     }
   }

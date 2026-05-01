@@ -2,7 +2,7 @@
 
 Runtime final:
 - `tapi-producer` publica un mensaje FIFO por work item
-- `tapi-orchestrator` consume SQS y dispara una ejecucion de Step Functions
+- `EventBridge Pipe` consume SQS FIFO y dispara una ejecucion sincronica de Step Functions Express
 - `tapi-consumer-state-machine` es duena de idempotencia, retries, lifecycle y persistencia final
 - `tapi-consumer` solo ejecuta la llamada al proveedor y devuelve o lanza errores clasificados
 

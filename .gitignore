@@ -2,7 +2,10 @@ node_modules/
 dist/
 cdk/cdk.out/
 cdk/dist/
+.next/
+artifacts/
 *.tsbuildinfo
 payload.json
 response.json
+response-phase2.json
 .DS_Store

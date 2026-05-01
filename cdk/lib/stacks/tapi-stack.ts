@@ -6,14 +6,13 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
-import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as pipes from 'aws-cdk-lib/aws-pipes';
 import * as stepfunctions from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as path from 'path';
 
 const RESULTS_TTL_DAYS = 90;
-const IDEMPOTENCY_TTL_DAYS = 2;
 const DISPATCH_SLOT_INDEX_NAME = 'dispatch-slot-index';
 const DISPATCH_SLOTS_PER_DAY = 288;
 
@@ -23,6 +22,7 @@ export class TapiStack extends cdk.Stack {
   public readonly idempotencyTable: dynamodb.Table;
   public readonly providerQueue: sqs.Queue;
   public readonly consumerFunction?: lambda.Function;
+  public readonly workflowBootstrapFunction?: lambda.Function;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -74,6 +74,12 @@ export class TapiStack extends cdk.Stack {
     const providerDlq = new sqs.Queue(this, 'TapiProviderDLQ', {
       queueName: 'tapi-provider-dlq.fifo',
       fifo: true,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+    });
+
+    const schedulerDlq = new sqs.Queue(this, 'TapiSchedulerDLQ', {
+      queueName: 'tapi-scheduler-dlq',
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
@@ -160,6 +166,42 @@ export class TapiStack extends cdk.Stack {
       },
     });
 
+    const workflowBootstrapLogGroup = new logs.LogGroup(this, 'TapiWorkflowBootstrapLogGroup', {
+      logGroupName: '/aws/lambda/tapi-workflow-bootstrap',
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    this.workflowBootstrapFunction = new NodejsFunction(this, 'TapiWorkflowBootstrapFunction', {
+      functionName: 'tapi-workflow-bootstrap',
+      entry: path.join(__dirname, '../../../src/functions/workflow-bootstrap/handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 128,
+      logGroup: workflowBootstrapLogGroup,
+      environment: {
+        NODE_OPTIONS: '--enable-source-maps',
+        LOG_LEVEL: 'INFO',
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        externalModules: [],
+        target: 'node20',
+      },
+    });
+
+    const bootstrapWorkflowInput = new tasks.LambdaInvoke(this, 'BootstrapWorkflowInput', {
+      lambdaFunction: this.workflowBootstrapFunction,
+      payload: stepfunctions.TaskInput.fromObject({
+        workItem: stepfunctions.JsonPath.objectAt('$[0].workItem'),
+        workflow: stepfunctions.JsonPath.objectAt('$[0].workflow'),
+      }),
+      payloadResponseOnly: true,
+      resultPath: '$',
+    });
+
     const invokeConsumer = new tasks.LambdaInvoke(this, 'InvokeConsumerLambda', {
       lambdaFunction: this.consumerFunction,
       payload: stepfunctions.TaskInput.fromObject({
@@ -201,21 +243,6 @@ export class TapiStack extends cdk.Stack {
       'RECORD#{}',
       stepfunctions.JsonPath.stringAt('$.workItem.recordId'),
     );
-    const providerPkPath = stepfunctions.JsonPath.format(
-      'PROVIDER#{}',
-      stepfunctions.JsonPath.stringAt('$.workItem.providerId'),
-    );
-    const resultSkPath = stepfunctions.JsonPath.format(
-      'TIMESTAMP#{}#{}',
-      stepfunctions.JsonPath.stringAt('$$.State.EnteredTime'),
-      stepfunctions.JsonPath.stringAt('$.workItem.recordId'),
-    );
-    const successResultSkPath = stepfunctions.JsonPath.format(
-      'TIMESTAMP#{}#{}',
-      stepfunctions.JsonPath.stringAt('$.consumerResult.processedAt'),
-      stepfunctions.JsonPath.stringAt('$.workItem.recordId'),
-    );
-
     const acquireIdempotencyLock = new tasks.DynamoPutItem(this, 'AcquireIdempotencyLock', {
       table: this.idempotencyTable,
       item: {
@@ -299,41 +326,190 @@ export class TapiStack extends cdk.Stack {
       resultPath: stepfunctions.JsonPath.DISCARD,
     });
 
+    const parseWorkflowErrorEnvelope = new stepfunctions.Pass(this, 'ParseWorkflowErrorEnvelope', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        'parsedWorkflowError.$': 'States.StringToJson($.workflowError.Cause)',
+      },
+      resultPath: '$',
+    });
+
+    const parseWorkflowErrorPayload = new stepfunctions.Pass(this, 'ParseWorkflowErrorPayload', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        'parsedWorkflowError.$': '$.parsedWorkflowError',
+        'parsedErrorPayload.$': 'States.StringToJson($.parsedWorkflowError.errorMessage)',
+      },
+      resultPath: '$',
+    });
+
+    const normalizeTerminalFailure = new stepfunctions.Pass(this, 'NormalizeTerminalFailure', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        normalizedFailure: {
+          'statusCode.$': '$.parsedErrorPayload.statusCode',
+          'message.$': '$.parsedErrorPayload.message',
+          category: 'TERMINAL',
+          errorType: 'TerminalApiError',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const normalizeTransientExhaustedFailure = new stepfunctions.Pass(this, 'NormalizeTransientExhaustedFailure', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        normalizedFailure: {
+          'statusCode.$': '$.parsedErrorPayload.statusCode',
+          'message.$': '$.parsedErrorPayload.message',
+          category: 'TRANSIENT_EXHAUSTED',
+          errorType: 'TransientApiError',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const normalizeTimeoutFailure = new stepfunctions.Pass(this, 'NormalizeTimeoutFailure', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        normalizedFailure: {
+          statusCode: 504,
+          message: 'Provider execution timed out',
+          category: 'TIMEOUT',
+          errorType: 'States.Timeout',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const normalizeUnexpectedFailure = new stepfunctions.Pass(this, 'NormalizeUnexpectedFailure', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        normalizedFailure: {
+          statusCode: 500,
+          'message.$': '$.workflowError.Cause',
+          category: 'UNEXPECTED',
+          'errorType.$': '$.workflowError.Error',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const normalizeUnexpectedClosureFailure = new stepfunctions.Pass(this, 'NormalizeUnexpectedClosureFailure', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.closureError',
+        normalizedFailure: {
+          statusCode: 500,
+          'message.$': '$.closureError.Cause',
+          category: 'UNEXPECTED',
+          'errorType.$': '$.closureError.Error',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const routeClassifiedFailure = new stepfunctions.Choice(this, 'RouteClassifiedFailure')
+      .when(
+        stepfunctions.Condition.stringEquals('$.workflowError.Error', 'TerminalApiError'),
+        normalizeTerminalFailure,
+      )
+      .otherwise(normalizeTransientExhaustedFailure);
+
+    const prepareSuccessPersistence = new stepfunctions.Pass(this, 'PrepareSuccessPersistence', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'consumerResult.$': '$.consumerResult',
+        persistence: {
+          'resultPk.$': "States.Format('PROVIDER#{}', $.workItem.providerId)",
+          'resultSk.$': "States.Format('TIMESTAMP#{}#{}', $.consumerResult.processedAt, $.workItem.recordId)",
+          'statusCodeText.$': "States.Format('{}', $.consumerResult.statusCode)",
+          'durationMsText.$': "States.Format('{}', $.consumerResult.durationMs)",
+          'responseBodyText.$': '$.consumerResult.responseBody',
+          'processedAt.$': '$.consumerResult.processedAt',
+          'ttlText.$': '$.workflow.resultsTtl',
+        },
+      },
+      resultPath: '$',
+    });
+
+    const prepareFailurePersistence = new stepfunctions.Pass(this, 'PrepareFailurePersistence', {
+      parameters: {
+        'workItem.$': '$.workItem',
+        'workflow.$': '$.workflow',
+        'workflowError.$': '$.workflowError',
+        'normalizedFailure.$': '$.normalizedFailure',
+        persistence: {
+          'resultPk.$': "States.Format('PROVIDER#{}', $.workItem.providerId)",
+          'resultSk.$': "States.Format('TIMESTAMP#{}#{}', $$.State.EnteredTime, $.workItem.recordId)",
+          'statusCodeText.$': "States.Format('{}', $.normalizedFailure.statusCode)",
+          durationMsText: '0',
+          'responseBodyText.$': 'States.JsonToString($.normalizedFailure)',
+          'processedAt.$': '$$.State.EnteredTime',
+          'ttlText.$': '$.workflow.resultsTtl',
+        },
+      },
+      resultPath: '$',
+    });
+
     const persistSuccessResult = new tasks.DynamoPutItem(this, 'PersistSuccessResult', {
       table: this.resultsTable,
       item: {
-        PK: tasks.DynamoAttributeValue.fromString(providerPkPath),
-        SK: tasks.DynamoAttributeValue.fromString(successResultSkPath),
+        PK: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.persistence.resultPk')),
+        SK: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.persistence.resultSk')),
         recordId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.recordId')),
         providerId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.providerId')),
-        statusCode: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.consumerResult.statusCode')),
-        responseBody: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.consumerResult.responseBody')),
-        durationMs: tasks.DynamoAttributeValue.numberFromString(
-          stepfunctions.JsonPath.stringAt('$.consumerResult.durationMs'),
+        statusCode: tasks.DynamoAttributeValue.numberFromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.statusCodeText'),
         ),
-        processedAt: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.consumerResult.processedAt')),
-        ttl: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.workflow.resultsTtl')),
+        responseBody: tasks.DynamoAttributeValue.fromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.responseBodyText'),
+        ),
+        durationMs: tasks.DynamoAttributeValue.numberFromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.durationMsText'),
+        ),
+        processedAt: tasks.DynamoAttributeValue.fromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.processedAt'),
+        ),
+        ttl: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.persistence.ttlText')),
       },
       resultPath: stepfunctions.JsonPath.DISCARD,
     });
 
-    const persistTerminalFailureResult = new tasks.DynamoPutItem(this, 'PersistTerminalFailureResult', {
+    const persistFailureResult = new tasks.DynamoPutItem(this, 'PersistFailureResult', {
       table: this.resultsTable,
       item: {
-        PK: tasks.DynamoAttributeValue.fromString(providerPkPath),
-        SK: tasks.DynamoAttributeValue.fromString(resultSkPath),
+        PK: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.persistence.resultPk')),
+        SK: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.persistence.resultSk')),
         recordId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.recordId')),
         providerId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.providerId')),
-        statusCode: tasks.DynamoAttributeValue.fromNumber(400),
-        responseBody: tasks.DynamoAttributeValue.fromMap({
-          errorType: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workflowError.Error')),
-          message: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workflowError.Cause')),
-          statusCode: tasks.DynamoAttributeValue.fromNumber(400),
-          category: tasks.DynamoAttributeValue.fromString('TERMINAL'),
-        }),
-        durationMs: tasks.DynamoAttributeValue.fromNumber(0),
-        processedAt: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$$.State.EnteredTime')),
-        ttl: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.workflow.resultsTtl')),
+        statusCode: tasks.DynamoAttributeValue.numberFromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.statusCodeText'),
+        ),
+        responseBody: tasks.DynamoAttributeValue.fromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.responseBodyText'),
+        ),
+        durationMs: tasks.DynamoAttributeValue.numberFromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.durationMsText'),
+        ),
+        processedAt: tasks.DynamoAttributeValue.fromString(
+          stepfunctions.JsonPath.stringAt('$.persistence.processedAt'),
+        ),
+        ttl: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.persistence.ttlText')),
       },
       resultPath: stepfunctions.JsonPath.DISCARD,
     });
@@ -350,7 +526,9 @@ export class TapiStack extends cdk.Stack {
       expressionAttributeValues: {
         ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
         ':failedAt': tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$$.State.EnteredTime')),
-        ':reason': tasks.DynamoAttributeValue.fromString('Workflow failed'),
+        ':reason': tasks.DynamoAttributeValue.fromString(
+          stepfunctions.JsonPath.stringAt('$.normalizedFailure.category'),
+        ),
       },
       resultPath: stepfunctions.JsonPath.DISCARD,
     });
@@ -370,100 +548,72 @@ export class TapiStack extends cdk.Stack {
       },
       resultPath: stepfunctions.JsonPath.DISCARD,
     });
-
-    const markIdempotencyFailedAfterTransient = new tasks.DynamoUpdateItem(this, 'MarkIdempotencyFailedAfterTransient', {
-      table: this.idempotencyTable,
-      key: {
-        idempotencyKey: tasks.DynamoAttributeValue.fromString(idempotencyKeyPath),
-      },
-      updateExpression: 'SET #status = :status, failedAt = :failedAt, failureReason = :reason',
-      expressionAttributeNames: {
-        '#status': 'status',
-      },
-      expressionAttributeValues: {
-        ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
-        ':failedAt': tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$$.State.EnteredTime')),
-        ':reason': tasks.DynamoAttributeValue.fromString('Workflow failed'),
-      },
-      resultPath: stepfunctions.JsonPath.DISCARD,
-    });
-
-    const markPendingFailedAfterTransient = new tasks.DynamoUpdateItem(this, 'MarkPendingFailedAfterTransient', {
-      table: this.pendingRecordsTable,
-      key: {
-        PK: tasks.DynamoAttributeValue.fromString(pendingPkPath),
-        SK: tasks.DynamoAttributeValue.fromString(pendingSkPath),
-      },
-      updateExpression: 'SET #status = :status',
-      expressionAttributeNames: {
-        '#status': 'status',
-      },
-      expressionAttributeValues: {
-        ':status': tasks.DynamoAttributeValue.fromString('FAILED'),
-      },
-      resultPath: stepfunctions.JsonPath.DISCARD,
-    });
-
-    const persistExhaustedTransientFailure = new tasks.DynamoPutItem(this, 'PersistExhaustedTransientFailure', {
-      table: this.resultsTable,
-      item: {
-        PK: tasks.DynamoAttributeValue.fromString(providerPkPath),
-        SK: tasks.DynamoAttributeValue.fromString(resultSkPath),
-        recordId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.recordId')),
-        providerId: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workItem.providerId')),
-        statusCode: tasks.DynamoAttributeValue.fromNumber(504),
-        responseBody: tasks.DynamoAttributeValue.fromMap({
-          errorType: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workflowError.Error')),
-          message: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$.workflowError.Cause')),
-          statusCode: tasks.DynamoAttributeValue.fromNumber(504),
-          category: tasks.DynamoAttributeValue.fromString('TRANSIENT_EXHAUSTED'),
-        }),
-        durationMs: tasks.DynamoAttributeValue.fromNumber(0),
-        processedAt: tasks.DynamoAttributeValue.fromString(stepfunctions.JsonPath.stringAt('$$.State.EnteredTime')),
-        ttl: tasks.DynamoAttributeValue.numberFromString(stepfunctions.JsonPath.stringAt('$.workflow.resultsTtl')),
-      },
-      resultPath: stepfunctions.JsonPath.DISCARD,
-    });
-
     const duplicateWorkItemPath = duplicateWorkItem.next(completeWorkflow);
     rollbackIdempotencyLock.next(duplicateWorkItemPath);
-    const successPath = persistSuccessResult
+    const successPath = prepareSuccessPersistence
+      .next(persistSuccessResult)
       .next(markIdempotencyCompleted)
       .next(markPendingCompleted)
       .next(completeWorkflow);
-    const terminalFailurePath = persistTerminalFailureResult
+    const failureClosurePath = prepareFailurePersistence
+      .next(persistFailureResult)
       .next(markIdempotencyFailed)
       .next(markPendingFailed)
       .next(completeWorkflow);
-    const exhaustedTransientFailurePath = persistExhaustedTransientFailure
-      .next(markIdempotencyFailedAfterTransient)
-      .next(markPendingFailedAfterTransient)
-      .next(completeWorkflow);
+
+    const terminalFailurePath = normalizeTerminalFailure.next(failureClosurePath);
+    const transientExhaustedFailurePath = normalizeTransientExhaustedFailure.next(failureClosurePath);
+    const timeoutFailurePath = normalizeTimeoutFailure.next(failureClosurePath);
+    const unexpectedFailurePath = normalizeUnexpectedFailure.next(failureClosurePath);
+    const unexpectedClosureFailurePath = normalizeUnexpectedClosureFailure.next(failureClosurePath);
+
+    parseWorkflowErrorEnvelope
+      .next(parseWorkflowErrorPayload)
+      .next(routeClassifiedFailure);
 
     invokeConsumer
-      .addCatch(exhaustedTransientFailurePath, {
-        errors: ['TransientApiError', 'States.Timeout', 'States.TaskFailed'],
+      .addCatch(parseWorkflowErrorEnvelope, {
+        errors: ['TerminalApiError', 'TransientApiError'],
         resultPath: '$.workflowError',
       })
-      .addCatch(terminalFailurePath, {
-        errors: ['TerminalApiError'],
+      .addCatch(timeoutFailurePath, {
+        errors: ['States.Timeout'],
         resultPath: '$.workflowError',
       })
-      .addCatch(exhaustedTransientFailurePath, {
+      .addCatch(unexpectedFailurePath, {
         errors: ['States.ALL'],
         resultPath: '$.workflowError',
       });
 
+    persistSuccessResult.addCatch(unexpectedClosureFailurePath, {
+      errors: ['States.ALL'],
+      resultPath: '$.closureError',
+    });
+    markIdempotencyCompleted.addCatch(unexpectedClosureFailurePath, {
+      errors: ['States.ALL'],
+      resultPath: '$.closureError',
+    });
+    markPendingCompleted.addCatch(unexpectedClosureFailurePath, {
+      errors: ['States.ALL'],
+      resultPath: '$.closureError',
+    });
+    persistFailureResult.addCatch(markIdempotencyFailed, {
+      errors: ['States.ALL'],
+      resultPath: stepfunctions.JsonPath.DISCARD,
+    });
+
     const workflowDefinition = stepfunctions.Chain
-      .start(acquireIdempotencyLock)
+      .start(bootstrapWorkflowInput)
+      .next(acquireIdempotencyLock)
       .next(markPendingInProgress)
       .next(invokeConsumer)
       .next(successPath);
 
     const stateMachine = new stepfunctions.StateMachine(this, 'TapiConsumerStateMachine', {
       definitionBody: stepfunctions.DefinitionBody.fromChainable(workflowDefinition),
-      stateMachineName: 'tapi-consumer-state-machine',
-      timeout: cdk.Duration.minutes(5),
+      stateMachineName: 'tapi-consumer-state-machine-express',
+      stateMachineType: stepfunctions.StateMachineType.EXPRESS,
+      timeout: cdk.Duration.minutes(4),
       logs: {
         destination: new logs.LogGroup(this, 'TapiConsumerStateMachineLogs', {
           logGroupName: '/aws/vendedlogs/states/tapi-consumer-state-machine',
@@ -475,47 +625,49 @@ export class TapiStack extends cdk.Stack {
       tracingEnabled: false,
     });
 
-    const orchestratorLogGroup = new logs.LogGroup(this, 'TapiOrchestratorLogGroup', {
-      logGroupName: '/aws/lambda/tapi-orchestrator',
-      retention: logs.RetentionDays.TWO_WEEKS,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    const pipeRole = new iam.Role(this, 'TapiProviderPipeRole', {
+      roleName: 'tapi-provider-pipe-role',
+      assumedBy: new iam.ServicePrincipal('pipes.amazonaws.com'),
+      description: 'Allows EventBridge Pipes to consume the provider FIFO queue and invoke the Step Functions workflow',
     });
+    this.providerQueue.grantConsumeMessages(pipeRole);
+    stateMachine.grantStartSyncExecution(pipeRole);
 
-    const orchestratorFn = new NodejsFunction(this, 'TapiOrchestratorFunction', {
-      functionName: 'tapi-orchestrator',
-      entry: path.join(__dirname, '../../../src/functions/orchestrator/handler.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: cdk.Duration.minutes(1),
-      memorySize: 256,
-      logGroup: orchestratorLogGroup,
-      environment: {
-        NODE_OPTIONS: '--enable-source-maps',
-        STATE_MACHINE_ARN: stateMachine.stateMachineArn,
-        LOG_LEVEL: 'INFO',
+    new pipes.CfnPipe(this, 'TapiProviderPipe', {
+      roleArn: pipeRole.roleArn,
+      source: this.providerQueue.queueArn,
+      target: stateMachine.stateMachineArn,
+      sourceParameters: {
+        sqsQueueParameters: {
+          batchSize: 1,
+        },
       },
-      bundling: {
-        minify: true,
-        sourceMap: true,
-        externalModules: [],
-        target: 'node20',
+      targetParameters: {
+        inputTemplate: [
+          '{',
+          '"workItem": <$.body>,',
+          '"workflow": {',
+          '"sourceMessageId": <$.messageId>,',
+          '"sourceIngestedAt": <aws.pipes.event.ingestion-time>',
+          '}',
+          '}',
+        ].join(''),
+        stepFunctionStateMachineParameters: {
+          invocationType: 'REQUEST_RESPONSE',
+        },
       },
+      desiredState: 'RUNNING',
+      name: 'tapi-provider-pipe',
     });
-
-    stateMachine.grantStartExecution(orchestratorFn);
-    this.providerQueue.grantConsumeMessages(orchestratorFn);
-    orchestratorFn.addEventSource(new lambdaEventSources.SqsEventSource(this.providerQueue, {
-      batchSize: 1,
-      reportBatchItemFailures: true,
-    }));
 
     const schedulerRole = new iam.Role(this, 'TapiSchedulerRole', {
       roleName: 'tapi-scheduler-role',
       assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
-      description: 'Allows EventBridge Scheduler to invoke the Tapi Producer Lambda',
+      description: 'Allows EventBridge Scheduler to invoke the Tapi Producer Lambda and write to the Scheduler DLQ',
     });
 
     producerFn.grantInvoke(schedulerRole);
+    schedulerDlq.grantSendMessages(schedulerRole);
 
     for (let slotId = 0; slotId < DISPATCH_SLOTS_PER_DAY; slotId += 1) {
       const hour = Math.floor(slotId / 12);
@@ -534,13 +686,16 @@ export class TapiStack extends cdk.Stack {
           roleArn: schedulerRole.roleArn,
           input: JSON.stringify({
             source: 'tapi.distributed-dispatch',
-            version: '1.0',
             slotId,
             slotsPerDay: DISPATCH_SLOTS_PER_DAY,
+            targetDateStrategy: 'today-utc-by-default',
           }),
           retryPolicy: {
             maximumEventAgeInSeconds: 3600,
             maximumRetryAttempts: 3,
+          },
+          deadLetterConfig: {
+            arn: schedulerDlq.queueArn,
           },
         },
         state: 'ENABLED',
