@@ -1,0 +1,468 @@
+{
+  "feature_id": "phase-2-state-machine-refactor",
+  "feature_name": "Phase 2 State Machine Refactor",
+  "document_type": "technical-spec",
+  "version": "0.1.0",
+  "status": "approved",
+  "architecture": {
+    "goal": "Refactor the phase-2 Step Functions workflow so it becomes the single owner of operational history, pending-record lifecycle, idempotency fail-fast behavior, retry policy, and final persistence, while the consumer Lambda becomes pure business execution.",
+    "runtime_shape": [
+      "EventBridge Scheduler triggers Producer Lambda",
+      "Producer Lambda reads eligible PENDING records and publishes one SQS FIFO message per work item",
+      "SQS FIFO preserves same-provider serialization",
+      "Orchestrator Lambda consumes one SQS message and starts one Step Functions execution with an enriched operational payload",
+      "The state machine performs operational orchestration through native DynamoDB integrations and one Lambda invoke task",
+      "Consumer Lambda only calls the provider API and returns business success or throws classified errors",
+      "The state machine persists final success or failure evidence in tapi-results and closes pending/idempotency state"
+    ],
+    "explicit_non_goals": [
+      "Changing the producer dispatch model",
+      "Changing SQS FIFO isolation guarantees",
+      "Large-scale repartitioning for 1M+",
+      "Replay tooling or operator UI",
+      "Persisting duplicate outcomes in tapi-results"
+    ]
+  },
+  "module_boundaries": [
+    {
+      "module": "Orchestrator Lambda",
+      "responsibility": "Parse SQS payload, enrich workflow metadata such as TTL strings, and start one Step Functions execution per work item."
+    },
+    {
+      "module": "State Machine",
+      "responsibility": "Own the operational story: idempotency, lifecycle transitions, retries, failure routing, and final persistence."
+    },
+    {
+      "module": "Consumer Lambda",
+      "responsibility": "Execute the provider API call and return or throw business outcomes without persisting results."
+    },
+    {
+      "module": "DynamoDB native task states",
+      "responsibility": "Handle lock acquisition, pending lifecycle updates, idempotency completion/failure, and results persistence using Step Functions service integrations."
+    }
+  ],
+  "interfaces_and_contracts": [
+    {
+      "name": "WorkflowInput",
+      "purpose": "Canonical input shape for the state machine after orchestration enrichment.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "endpoint": "string",
+        "httpMethod": "GET | POST | PUT | PATCH",
+        "payload": "Record<string, unknown> | undefined",
+        "headers": "Record<string, string> | undefined",
+        "scheduledDate": "YYYY-MM-DD",
+        "status": "PENDING",
+        "workflow.idempotencyTtl": "string numeric unix epoch seconds",
+        "workflow.resultsTtl": "string numeric unix epoch seconds"
+      }
+    },
+    {
+      "name": "ConsumerInvokePayload",
+      "purpose": "Payload injected into the business Lambda.",
+      "shape": "Exactly the original work-item fields only. The Lambda does not require workflow metadata to perform the provider call."
+    },
+    {
+      "name": "ConsumerSuccessResult",
+      "purpose": "Successful business response returned by the Lambda to the state machine.",
+      "shape": {
+        "recordId": "string",
+        "providerId": "string",
+        "statusCode": "number",
+        "responseBody": "unknown",
+        "durationMs": "number",
+        "processedAt": "ISO-8601 timestamp"
+      }
+    },
+    {
+      "name": "ConsumerFailureContract",
+      "purpose": "Error classification used by Step Functions retry and catch logic.",
+      "shape": {
+        "TransientApiError": "retryable provider failure",
+        "TerminalApiError": "non-retryable provider failure"
+      }
+    }
+  ],
+  "state_machine_definition": {
+    "workflow_style": "Standard Workflow",
+    "context_preservation_rule": "The original workflow input must remain available after InvokeConsumerLambda. Lambda response data must be stored under a dedicated result node instead of replacing the root input.",
+    "states": [
+      {
+        "name": "AcquireIdempotencyLock",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:putItem",
+        "responsibility": "Claim the logical work item before business execution.",
+        "parameters": {
+          "TableName": "tapi-idempotency",
+          "Item": {
+            "idempotencyKey": "States.Format('{}#{}', $.recordId, $.scheduledDate)",
+            "recordId": "$.recordId",
+            "providerId": "$.providerId",
+            "scheduledDate": "$.scheduledDate",
+            "status": "IN_PROGRESS",
+            "startedAt": "$$.State.EnteredTime",
+            "ttl": "numberFromString($.workflow.idempotencyTtl)"
+          },
+          "ConditionExpression": "attribute_not_exists(idempotencyKey)"
+        },
+        "result_handling": "Discard service response and preserve original workflow input.",
+        "catch": {
+          "errors": [
+            "DynamoDB.ConditionalCheckFailedException",
+            "ConditionalCheckFailedException"
+          ],
+          "next": "DuplicateWorkItem"
+        }
+      },
+      {
+        "name": "MarkPendingInProgress",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:updateItem",
+        "responsibility": "Advance the lifecycle from PENDING to IN_PROGRESS.",
+        "parameters": {
+          "TableName": "tapi-pending-records",
+          "Key": {
+            "PK": "States.Format('DATE#{}', $.scheduledDate)",
+            "SK": "States.Format('RECORD#{}', $.recordId)"
+          },
+          "UpdateExpression": "SET #status = :status",
+          "ConditionExpression": "#status = :expected",
+          "ExpressionAttributeNames": {
+            "#status": "status"
+          },
+          "ExpressionAttributeValues": {
+            ":status": "IN_PROGRESS",
+            ":expected": "PENDING"
+          }
+        },
+        "result_handling": "Discard service response and preserve original workflow input.",
+        "catch": {
+          "errors": [
+            "DynamoDB.ConditionalCheckFailedException",
+            "ConditionalCheckFailedException"
+          ],
+          "next": "DuplicateWorkItem"
+        }
+      },
+      {
+        "name": "InvokeConsumerLambda",
+        "type": "Task",
+        "integration": "arn:aws:states:::lambda:invoke",
+        "responsibility": "Execute pure business logic only.",
+        "payload_injection": {
+          "FunctionName": "tapi-consumer",
+          "Payload": {
+            "recordId": "$.recordId",
+            "providerId": "$.providerId",
+            "endpoint": "$.endpoint",
+            "httpMethod": "$.httpMethod",
+            "payload": "$.payload",
+            "headers": "$.headers",
+            "scheduledDate": "$.scheduledDate",
+            "status": "$.status"
+          }
+        },
+        "result_handling": {
+          "resultPath": "$.consumerResult",
+          "payloadResponseOnly": true,
+          "rule": "Store the Lambda success payload under $.consumerResult and keep root workflow fields intact for downstream DynamoDB states."
+        },
+        "retry": {
+          "errors": [
+            "TransientApiError",
+            "States.Timeout",
+            "States.TaskFailed"
+          ],
+          "intervalSeconds": 2,
+          "backoffRate": 2.0,
+          "maxAttempts": 3,
+          "jitterStrategy": "FULL"
+        },
+        "catch": [
+          {
+            "errors": [
+              "TerminalApiError"
+            ],
+            "resultPath": "$.workflowError",
+            "next": "PersistTerminalFailureResult"
+          },
+          {
+            "errors": [
+              "TransientApiError",
+              "States.Timeout",
+              "States.TaskFailed"
+            ],
+            "resultPath": "$.workflowError",
+            "next": "PersistExhaustedFailureResult"
+          }
+        ]
+      },
+      {
+        "name": "PersistSuccessResult",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:putItem",
+        "responsibility": "Persist success evidence in tapi-results.",
+        "parameters": {
+          "TableName": "tapi-results",
+          "Item": {
+            "PK": "States.Format('PROVIDER#{}', $.providerId)",
+            "SK": "States.Format('TIMESTAMP#{}#{}', $.consumerResult.processedAt, $.recordId)",
+            "recordId": "$.recordId",
+            "providerId": "$.providerId",
+            "statusCode": "$.consumerResult.statusCode",
+            "responseBody": "$.consumerResult.responseBody",
+            "durationMs": "$.consumerResult.durationMs",
+            "processedAt": "$.consumerResult.processedAt",
+            "ttl": "numberFromString($.workflow.resultsTtl)"
+          }
+        },
+        "result_handling": "Discard service response and preserve workflow input."
+      },
+      {
+        "name": "MarkIdempotencyCompleted",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:updateItem",
+        "responsibility": "Close the idempotency record as COMPLETED.",
+        "parameters": {
+          "TableName": "tapi-idempotency",
+          "Key": {
+            "idempotencyKey": "States.Format('{}#{}', $.recordId, $.scheduledDate)"
+          },
+          "UpdateExpression": "SET #status = :status, completedAt = :completedAt",
+          "ExpressionAttributeNames": {
+            "#status": "status"
+          },
+          "ExpressionAttributeValues": {
+            ":status": "COMPLETED",
+            ":completedAt": "$$.State.EnteredTime"
+          }
+        },
+        "result_handling": "Discard service response."
+      },
+      {
+        "name": "MarkPendingCompleted",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:updateItem",
+        "responsibility": "Mark the pending record as COMPLETED.",
+        "parameters": {
+          "TableName": "tapi-pending-records",
+          "Key": {
+            "PK": "States.Format('DATE#{}', $.scheduledDate)",
+            "SK": "States.Format('RECORD#{}', $.recordId)"
+          },
+          "UpdateExpression": "SET #status = :status",
+          "ExpressionAttributeNames": {
+            "#status": "status"
+          },
+          "ExpressionAttributeValues": {
+            ":status": "COMPLETED"
+          }
+        }
+      },
+      {
+        "name": "PersistTerminalFailureResult",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:putItem",
+        "responsibility": "Persist terminal failure evidence in tapi-results.",
+        "parameters": {
+          "TableName": "tapi-results",
+          "Item": {
+            "PK": "States.Format('PROVIDER#{}', $.providerId)",
+            "SK": "States.Format('TIMESTAMP#{}#{}', $$.State.EnteredTime, $.recordId)",
+            "recordId": "$.recordId",
+            "providerId": "$.providerId",
+            "statusCode": "$.workflowError.Cause.statusCode or mapped terminal code",
+            "responseBody": "$.workflowError",
+            "durationMs": "0 if unavailable",
+            "processedAt": "$$.State.EnteredTime",
+            "ttl": "numberFromString($.workflow.resultsTtl)"
+          }
+        },
+        "note": "Implementation may normalize terminal error payload into a stable DynamoDB-friendly map before this state if Step Functions cannot project the thrown shape directly."
+      },
+      {
+        "name": "PersistExhaustedFailureResult",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:putItem",
+        "responsibility": "Persist exhausted transient failure evidence in tapi-results.",
+        "parameters": {
+          "TableName": "tapi-results",
+          "Item": {
+            "PK": "States.Format('PROVIDER#{}', $.providerId)",
+            "SK": "States.Format('TIMESTAMP#{}#{}', $$.State.EnteredTime, $.recordId)",
+            "recordId": "$.recordId",
+            "providerId": "$.providerId",
+            "statusCode": "504 fallback",
+            "responseBody": "normalized exhausted retry evidence",
+            "durationMs": "0 if unavailable",
+            "processedAt": "$$.State.EnteredTime",
+            "ttl": "numberFromString($.workflow.resultsTtl)"
+          }
+        }
+      },
+      {
+        "name": "MarkIdempotencyFailed",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:updateItem",
+        "responsibility": "Close the idempotency record as FAILED for terminal or exhausted paths.",
+        "parameters": {
+          "TableName": "tapi-idempotency",
+          "Key": {
+            "idempotencyKey": "States.Format('{}#{}', $.recordId, $.scheduledDate)"
+          },
+          "UpdateExpression": "SET #status = :status, failedAt = :failedAt, failureReason = :reason",
+          "ExpressionAttributeNames": {
+            "#status": "status"
+          },
+          "ExpressionAttributeValues": {
+            ":status": "FAILED",
+            ":failedAt": "$$.State.EnteredTime",
+            ":reason": "Workflow failed"
+          }
+        }
+      },
+      {
+        "name": "MarkPendingFailed",
+        "type": "Task",
+        "integration": "arn:aws:states:::dynamodb:updateItem",
+        "responsibility": "Mark the pending record as FAILED.",
+        "parameters": {
+          "TableName": "tapi-pending-records",
+          "Key": {
+            "PK": "States.Format('DATE#{}', $.scheduledDate)",
+            "SK": "States.Format('RECORD#{}', $.recordId)"
+          },
+          "UpdateExpression": "SET #status = :status",
+          "ExpressionAttributeNames": {
+            "#status": "status"
+          },
+          "ExpressionAttributeValues": {
+            ":status": "FAILED"
+          }
+        }
+      },
+      {
+        "name": "DuplicateWorkItem",
+        "type": "Pass",
+        "responsibility": "Finish duplicate or no-longer-claimable work as a no-op operational success."
+      },
+      {
+        "name": "WorkflowCompleted",
+        "type": "Succeed",
+        "responsibility": "Terminate a successful or duplicate workflow."
+      }
+    ],
+    "success_path": [
+      "AcquireIdempotencyLock",
+      "MarkPendingInProgress",
+      "InvokeConsumerLambda",
+      "PersistSuccessResult",
+      "MarkIdempotencyCompleted",
+      "MarkPendingCompleted",
+      "WorkflowCompleted"
+    ],
+    "failure_path_terminal": [
+      "InvokeConsumerLambda",
+      "PersistTerminalFailureResult",
+      "MarkIdempotencyFailed",
+      "MarkPendingFailed",
+      "WorkflowCompleted"
+    ],
+    "failure_path_exhausted": [
+      "InvokeConsumerLambda",
+      "PersistExhaustedFailureResult",
+      "MarkIdempotencyFailed",
+      "MarkPendingFailed",
+      "WorkflowCompleted"
+    ]
+  },
+  "dependency_and_library_decisions": [
+    {
+      "decision": "Use native Step Functions DynamoDB integrations for lock acquisition, lifecycle transitions, and results persistence.",
+      "rationale": "This keeps Lambda compute focused on business execution and reduces cost."
+    },
+    {
+      "decision": "Use a single LambdaInvoke task only for provider business execution.",
+      "rationale": "The consumer Lambda remains pure and the state machine owns operational persistence."
+    },
+    {
+      "decision": "Keep WorkflowInput TTLs as string numerics.",
+      "rationale": "Native DynamoDB task integrations require numeric attribute values to be passed through numberFromString semantics."
+    },
+    {
+      "decision": "Use full jitter in retry behavior for transient failures.",
+      "rationale": "This avoids herd effects against provider APIs while preserving retry resilience."
+    }
+  ],
+  "failure_modes_and_edge_handling": [
+    {
+      "case": "Idempotency lock already exists",
+      "handling": "Catch the conditional failure and finish in DuplicateWorkItem without invoking the consumer."
+    },
+    {
+      "case": "Pending record no longer claimable",
+      "handling": "Catch the conditional failure in MarkPendingInProgress and finish in DuplicateWorkItem."
+    },
+    {
+      "case": "Consumer returns success",
+      "handling": "Persist success evidence and close lifecycle as COMPLETED."
+    },
+    {
+      "case": "Consumer throws TerminalApiError",
+      "handling": "Skip retry, persist terminal failure evidence, and close lifecycle as FAILED."
+    },
+    {
+      "case": "Consumer throws TransientApiError repeatedly",
+      "handling": "Retry with exponential backoff and full jitter until attempts are exhausted, then persist exhausted failure evidence and close as FAILED."
+    },
+    {
+      "case": "Lambda response envelope overwrites workflow input",
+      "handling": "Forbidden by design. The invoke task must preserve the original root input and store Lambda output under a dedicated node."
+    }
+  ],
+  "testing_strategy": {
+    "quality_gates": [
+      "TypeScript build passes.",
+      "Unit tests cover the consumer as pure business logic without results persistence.",
+      "State machine synth reflects native DynamoDB integrations and jitter-enabled retries.",
+      "Manual execution of the workflow proves success path, terminal failure path, exhausted transient path, and duplicate no-op path."
+    ],
+    "expected_test_scenarios": [
+      "Manual execution with a valid pending record reaches PersistSuccessResult and MarkPendingCompleted on HTTP 200.",
+      "Manual execution with HTTP 400 reaches terminal failure path without retry.",
+      "Manual execution with HTTP 503 retries with backoff and full jitter, then reaches exhausted failure path if retries are consumed.",
+      "A duplicate or already-claimed record ends in DuplicateWorkItem without invoking the consumer.",
+      "The workflow input remains available after InvokeConsumerLambda for downstream DynamoDB states."
+    ]
+  },
+  "phased_implementation_plan": [
+    {
+      "phase": "state-machine-refactor",
+      "goal": "Make Step Functions the single operational owner of phase-2 execution history.",
+      "tasks": [
+        "Remove results persistence responsibility from the consumer Lambda.",
+        "Refactor LambdaInvoke to preserve original workflow input and store success output under a dedicated result node.",
+        "Add native DynamoDB success persistence state.",
+        "Split terminal and exhausted failure persistence into state-machine-owned branches.",
+        "Add retry configuration with BackoffRate 2.0 and JitterStrategy FULL.",
+        "Validate duplicate no-op behavior and success/failure lifecycle closure end to end."
+      ],
+      "dependencies": [
+        "Approved functional-spec.json for phase-2-state-machine-refactor"
+      ],
+      "definition_of_done": [
+        "The consumer Lambda is pure business execution only.",
+        "The state machine owns final persistence to tapi-results.",
+        "Workflow input survives the consumer invoke step.",
+        "Transient retries use full jitter.",
+        "Terminal and exhausted failures close through explicit failure states."
+      ]
+    }
+  ],
+  "assumptions": [
+    "The consumer Lambda can be changed to return structured success payloads and throw classified errors without writing to DynamoDB.",
+    "Duplicate executions should not write rows into tapi-results.",
+    "A stable error normalization step may be needed if direct Step Functions access to thrown error shape is insufficient for results persistence."
+  ]
+}

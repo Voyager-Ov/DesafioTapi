@@ -4,8 +4,9 @@ import {
   QueryCommand,
   QueryCommandInput,
 } from '@aws-sdk/lib-dynamodb';
-import { IRecordRepositoryPort } from '../ports/out-ports';
-import { ProviderRecord } from '../../../shared/types';
+import { DispatchSlotQuery, IRecordRepositoryPort } from '../ports/out-ports';
+import { PendingDispatchRecord } from '../../../shared/types';
+import { formatDispatchSlotPk } from '../domain/dispatch-slot-routing';
 
 // ---------------------------------------------------------------------------
 // DynamoDbRecordsAdapter
@@ -14,8 +15,8 @@ import { ProviderRecord } from '../../../shared/types';
 // `tapi-pending-records` DynamoDB table.
 //
 // Table access pattern used here:
-//   PK = DATE#<YYYY-MM-DD>   → Query all records scheduled for a given day
-//   SK begins_with RECORD#   → Scoped to the correct SK namespace
+//   GSI PK = DATE#<YYYY-MM-DD>#SLOT#<slot> → Query one dispatch slot partition
+//   GSI SK = PROVIDER#<providerId>#RECORD#<recordId>
 //
 // Handles DynamoDB pagination automatically via the `LastEvaluatedKey` loop.
 // ---------------------------------------------------------------------------
@@ -35,32 +36,29 @@ export class DynamoDbRecordsAdapter implements IRecordRepositoryPort {
     });
   }
 
-  async getPendingRecords(date: string): Promise<ProviderRecord[]> {
-    const allRecords: ProviderRecord[] = [];
+  async getPendingRecordsForSlot(query: DispatchSlotQuery): Promise<PendingDispatchRecord[]> {
+    const allRecords: PendingDispatchRecord[] = [];
     let lastEvaluatedKey: Record<string, unknown> | undefined;
+    const dispatchSlotPk = formatDispatchSlotPk(
+      query.targetDate,
+      query.slotId,
+      query.slotsPerDay,
+    );
 
     do {
       const params: QueryCommandInput = {
         TableName: this.tableName,
-        // Query by date partition
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :skPrefix)',
-        // Only return PENDING records
-        FilterExpression: '#status = :pending',
-        ExpressionAttributeNames: {
-          '#status': 'status', // 'status' is not a reserved word but aliasing is safe practice
-        },
+        IndexName: 'dispatch-slot-index',
+        KeyConditionExpression: 'dispatchSlotPk = :dispatchSlotPk',
         ExpressionAttributeValues: {
-          ':pk': `DATE#${date}`,
-          ':skPrefix': 'RECORD#',
-          ':pending': 'PENDING',
+          ':dispatchSlotPk': dispatchSlotPk,
         },
-        // Continue from where we left off (pagination)
         ...(lastEvaluatedKey && { ExclusiveStartKey: lastEvaluatedKey }),
       };
 
       const response = await this.docClient.send(new QueryCommand(params));
 
-      const items = (response.Items ?? []) as ProviderRecord[];
+      const items = (response.Items ?? []) as PendingDispatchRecord[];
       allRecords.push(...items);
 
       lastEvaluatedKey = response.LastEvaluatedKey as Record<string, unknown> | undefined;

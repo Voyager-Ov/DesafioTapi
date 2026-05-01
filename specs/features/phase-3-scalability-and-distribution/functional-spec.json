@@ -1,0 +1,352 @@
+{
+  "feature_id": "phase-3-scalability-and-distribution",
+  "feature_name": "Phase 3 Scalability and Distribution",
+  "document_type": "functional-spec",
+  "version": "0.1.0",
+  "status": "approved",
+  "source_of_truth": [
+    "C:\\github desktop\\tapi\\goal.txt",
+    "C:\\github desktop\\tapi\\specs\\roadmap\\phased-spec-driven-plan.md",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-resilience\\functional-spec.json",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-state-machine-refactor\\functional-spec.json",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-state-machine-refactor\\technical-spec.json"
+  ],
+  "context_scan_summary": {
+    "stack_and_runtime_constraints": [
+      "TypeScript monorepo with root app code and AWS CDK stack.",
+      "Runtime is AWS serverless on Node.js 20.",
+      "Current orchestration is EventBridge Scheduler -> Producer Lambda -> SQS FIFO -> Orchestrator Lambda -> Step Functions -> Consumer Lambda.",
+      "Current persistence is DynamoDB with separate tables for pending records, idempotency, and results."
+    ],
+    "architecture_shape": [
+      "Phase 2 already established provider isolation, operational lifecycle, retries, and idempotency.",
+      "The current producer model reads pending records and dispatches work items for a target date.",
+      "The current scope does not yet solve defendable processing of 1M+ pending records or temporal distribution at that scale."
+    ],
+    "likely_touched_modules": [
+      "Producer dispatch flow and its record-selection strategy.",
+      "CDK infrastructure for large-scale scheduling, batching, or distributed execution.",
+      "Pending-record access patterns and partition-aware querying.",
+      "Phase docs and specs for operator validation at scale."
+    ],
+    "test_setup_available": [
+      "TypeScript build with composite project references.",
+      "Jest unit tests for CDK, orchestrator, consumer, and adapters.",
+      "Manual AWS validation flow already documented for phase 2."
+    ]
+  },
+  "product_scope": {
+    "problem_statement": "The current system can process provider work items with resilience and operational control, but it still assumes a manageable pending-record volume. The challenge requires a defendable strategy for 1M+ records, distributed execution over time, and avoidance of monolithic scans or concentrated load against infrastructure and providers.",
+    "goal": "Extend the validated phase-2 flow with a functional strategy for massive-scale selection, distribution, and dispatch of work items so the architecture can defend daily processing of 1M+ records without abandoning provider isolation or operational control.",
+    "success_outcomes": [
+      "The system no longer depends on a monolithic read of all pending records for a day.",
+      "Daily work can be distributed into smaller execution units that are operationally reasonable at 1M+ scale.",
+      "Dispatch pressure is spread in time and volume rather than concentrated in one execution burst.",
+      "Same-provider serialization remains intact while large-scale throughput is introduced.",
+      "The phase provides a defendable position on whether shuffle-sharding is adopted now, deferred, or explicitly rejected."
+    ]
+  },
+  "in_scope": [
+    "Functional strategy for processing 1M+ pending records.",
+    "Functional decomposition of daily pending work into smaller execution units.",
+    "Temporal distribution of dispatch work to avoid a single concentrated burst.",
+    "Preservation of provider isolation while large-scale processing is introduced.",
+    "Explicit decision point on shuffle-sharding as part of the scalability story.",
+    "Functional expectations for operator reasoning about large-scale progress."
+  ],
+  "out_of_scope": [
+    "Low-level implementation details of AWS-specific partitioning or pagination APIs.",
+    "Final cost tuning or exact throughput sizing.",
+    "Advanced observability dashboards and SLO programs.",
+    "Cross-region disaster recovery.",
+    "Business-rule changes for provider classification or phase-2 lifecycle semantics.",
+    "Human-facing operator UI."
+  ],
+  "actors": [
+    {
+      "name": "Scheduler Layer",
+      "description": "Starts or coordinates the daily processing windows."
+    },
+    {
+      "name": "Mass Dispatch Flow",
+      "description": "Selects eligible records in scalable chunks and publishes downstream work."
+    },
+    {
+      "name": "Operational Orchestration Flow",
+      "description": "Continues to own retries, idempotency, lifecycle, and final closure once a work item is dispatched."
+    },
+    {
+      "name": "Provider Boundary",
+      "description": "Must continue receiving serialized requests per provider even when global throughput rises."
+    },
+    {
+      "name": "Technical Reviewer",
+      "description": "Needs a defendable scale strategy for 1M+ records and a clear stance on temporal distribution and shuffle-sharding."
+    }
+  ],
+  "user_journeys": [
+    {
+      "id": "journey-01",
+      "name": "Daily workload is decomposed into scalable units",
+      "steps": [
+        "A daily processing window begins.",
+        "The system identifies that a very large set of pending records is eligible.",
+        "The system breaks that workload into smaller dispatch units instead of attempting one monolithic read-and-send execution.",
+        "Those units are processed progressively until the eligible work for the day is exhausted."
+      ]
+    },
+    {
+      "id": "journey-02",
+      "name": "Large-scale dispatch remains distributed over time",
+      "steps": [
+        "A high-volume day requires many work items to be dispatched.",
+        "The system spreads that dispatch work over a reasonable temporal window instead of sending everything in one burst.",
+        "Providers continue receiving requests in an orderly way while overall progress continues."
+      ]
+    },
+    {
+      "id": "journey-03",
+      "name": "Provider isolation survives global scale-up",
+      "steps": [
+        "Multiple providers have eligible work at the same time.",
+        "The system increases global throughput for the daily workload.",
+        "Each provider still receives serialized work in order while different providers can progress independently."
+      ]
+    },
+    {
+      "id": "journey-04",
+      "name": "Scale design is technically defendable",
+      "steps": [
+        "A reviewer inspects the phase-3 design.",
+        "They identify the strategy for breaking up large pending workloads.",
+        "They understand how temporal spreading works and whether shuffle-sharding is part of the phase.",
+        "They can defend why the design is safer than a single giant scan and burst dispatch."
+      ]
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "uc-01",
+      "title": "Process a very large daily backlog",
+      "description": "The system must handle daily eligible work in the million-plus range without requiring one monolithic execution."
+    },
+    {
+      "id": "uc-02",
+      "title": "Distribute dispatch over time",
+      "description": "The system must avoid concentrating all dispatch traffic into one narrow burst."
+    },
+    {
+      "id": "uc-03",
+      "title": "Preserve same-provider ordering at scale",
+      "description": "The system must continue protecting providers from concurrency violations even while global throughput increases."
+    },
+    {
+      "id": "uc-04",
+      "title": "Choose a defendable sharding posture",
+      "description": "The system design must explicitly state whether shuffle-sharding is adopted, deferred, or rejected for this phase."
+    },
+    {
+      "id": "uc-05",
+      "title": "Keep phase-2 operational guarantees intact",
+      "description": "Scale behavior must not invalidate the idempotency, retry, and lifecycle guarantees already established."
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "br-01",
+      "rule": "The system must not depend on a single monolithic read of the entire daily pending workload."
+    },
+    {
+      "id": "br-02",
+      "rule": "Daily eligible work must be decomposed into smaller execution units that can progress independently."
+    },
+    {
+      "id": "br-03",
+      "rule": "Dispatch work must be spread in time or batches to avoid one concentrated burst against infrastructure or providers."
+    },
+    {
+      "id": "br-04",
+      "rule": "Same-provider serialization remains mandatory even when large-scale throughput is introduced."
+    },
+    {
+      "id": "br-05",
+      "rule": "Cross-provider progress may continue in parallel."
+    },
+    {
+      "id": "br-06",
+      "rule": "Phase 3 must preserve phase-2 resilience and idempotency guarantees rather than replacing them."
+    },
+    {
+      "id": "br-07",
+      "rule": "The phase must explicitly document its stance on shuffle-sharding as part of the scale strategy."
+    },
+    {
+      "id": "br-08",
+      "rule": "This phase prioritizes defendable scale behavior over final optimization, dashboards, or presentation tooling."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "fr-01",
+      "title": "Scalable pending selection",
+      "statement": "The system must support a scalable way to select daily eligible pending work without relying on one monolithic read."
+    },
+    {
+      "id": "fr-02",
+      "title": "Workload decomposition",
+      "statement": "The system must decompose a very large daily workload into smaller dispatch units that can be processed progressively."
+    },
+    {
+      "id": "fr-03",
+      "title": "Temporal distribution",
+      "statement": "The system must distribute dispatch work over time rather than issuing all work in one concentrated burst."
+    },
+    {
+      "id": "fr-04",
+      "title": "Provider isolation preservation",
+      "statement": "The system must preserve same-provider serialization while enabling large-scale global progress."
+    },
+    {
+      "id": "fr-05",
+      "title": "Cross-provider parallel progress",
+      "statement": "The system must continue allowing work from different providers to progress independently."
+    },
+    {
+      "id": "fr-06",
+      "title": "Scale strategy traceability",
+      "statement": "The phase must make the large-scale selection and distribution strategy understandable to a technical reviewer."
+    },
+    {
+      "id": "fr-07",
+      "title": "Shuffle-sharding decision",
+      "statement": "The phase must explicitly state whether shuffle-sharding is part of the current solution and why."
+    },
+    {
+      "id": "fr-08",
+      "title": "Operational guarantee preservation",
+      "statement": "The phase must preserve the operational semantics established in phase 2 once work items have been dispatched."
+    }
+  ],
+  "interaction_expectations": [
+    {
+      "id": "ux-01",
+      "expectation": "A reviewer should be able to understand how the system avoids a giant one-shot daily scan and dispatch."
+    },
+    {
+      "id": "ux-02",
+      "expectation": "The scale model should feel like an extension of the existing architecture rather than a contradictory redesign."
+    },
+    {
+      "id": "ux-03",
+      "expectation": "The phase should leave clear room for later observability and cost-tuning work without requiring them now."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "ac-01",
+      "given": "A daily workload contains 1M+ eligible records",
+      "when": "The scale design is applied",
+      "then": "The system does not rely on a single monolithic read-and-dispatch execution."
+    },
+    {
+      "id": "ac-02",
+      "given": "A very large eligible workload exists for one day",
+      "when": "The system dispatches work",
+      "then": "The workload is broken into smaller units that can progress progressively."
+    },
+    {
+      "id": "ac-03",
+      "given": "The system has many work items to dispatch",
+      "when": "The daily run proceeds",
+      "then": "Dispatch is spread over time or equivalent distributed execution windows rather than one concentrated burst."
+    },
+    {
+      "id": "ac-04",
+      "given": "Many work items belong to the same provider",
+      "when": "The scale strategy is applied",
+      "then": "The provider still receives serialized processing in order."
+    },
+    {
+      "id": "ac-05",
+      "given": "Work items belong to different providers",
+      "when": "The scale strategy is applied",
+      "then": "The system may progress them independently in parallel."
+    },
+    {
+      "id": "ac-06",
+      "given": "A reviewer examines the phase-3 design",
+      "when": "They inspect the functional scope",
+      "then": "They can explain how the architecture handles 1M+ scale and why it is safer than a monolithic daily dispatch."
+    },
+    {
+      "id": "ac-07",
+      "given": "A reviewer examines the sharding strategy",
+      "when": "They inspect phase-3 outputs",
+      "then": "They can see an explicit decision on shuffle-sharding and its role in the current phase."
+    },
+    {
+      "id": "ac-08",
+      "given": "Phase-2 operational controls are already in place",
+      "when": "Phase 3 is introduced",
+      "then": "The scale strategy does not remove or contradict retries, idempotency, or lifecycle closure after dispatch."
+    }
+  ],
+  "assumptions": [
+    "Phase 2 is the operational base and remains valid after phase-3 scale changes.",
+    "The business requirement is to defend a scalable architecture for 1M+ daily records, not necessarily to optimize every cost dimension in this phase.",
+    "Temporal distribution may be achieved through one or more orchestrated windows rather than a single daily burst.",
+    "Detailed selection mechanics, partitioning, and AWS service choices belong to the technical spec, not to this functional spec."
+  ],
+  "open_questions": [
+    {
+      "id": "oq-01",
+      "question": "Should phase 3 commit to shuffle-sharding in the first implementation, or only require a defendable decision with the option to defer it?",
+      "resolved_as": "Defer manual shuffle-sharding. Use Amazon SQS FIFO High Throughput mode and rely on automatic partitioning by MessageGroupId hash as the defendable scale posture for this phase."
+    },
+    {
+      "id": "oq-02",
+      "question": "Should temporal distribution be treated as mandatory per-provider scheduling windows, or is distributed batch dispatch across the day sufficient for this phase?",
+      "resolved_as": "Use distributed batch dispatch across the day. EventBridge Scheduler will invoke dispatch work continuously across a 24-hour window instead of one monolithic daily burst."
+    }
+  ],
+  "traceability_summary": {
+    "phase_goal_alignment": [
+      {
+        "goal_area": "Scalable pending selection and decomposition",
+        "mapped_requirements": [
+          "fr-01",
+          "fr-02",
+          "ac-01",
+          "ac-02"
+        ]
+      },
+      {
+        "goal_area": "Temporal distribution",
+        "mapped_requirements": [
+          "fr-03",
+          "ac-03"
+        ]
+      },
+      {
+        "goal_area": "Isolation preservation at scale",
+        "mapped_requirements": [
+          "fr-04",
+          "fr-05",
+          "fr-08",
+          "ac-04",
+          "ac-05",
+          "ac-08"
+        ]
+      },
+      {
+        "goal_area": "Technical defensibility",
+        "mapped_requirements": [
+          "fr-06",
+          "fr-07",
+          "ac-06",
+          "ac-07"
+        ]
+      }
+    ]
+  }
+}

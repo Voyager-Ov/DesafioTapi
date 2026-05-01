@@ -1,0 +1,271 @@
+{
+  "feature_id": "phase-2-state-machine-refactor",
+  "feature_name": "Phase 2 State Machine Refactor",
+  "document_type": "functional-spec",
+  "version": "0.1.0",
+  "status": "approved",
+  "source_of_truth": [
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-resilience\\functional-spec.json",
+    "C:\\github desktop\\tapi\\specs\\features\\phase-2-resilience\\technical-spec.json"
+  ],
+  "product_scope": {
+    "problem_statement": "The current phase-2 state machine mixes operational orchestration with fragile payload handling and conflicts with the intended separation of responsibilities between the business consumer and the operational workflow.",
+    "goal": "Refactor the state machine so it becomes the single owner of operational history, lifecycle progression, idempotency fail-fast behavior, retry policy, and final persistence, while the consumer Lambda remains pure business execution.",
+    "success_outcomes": [
+      "The state machine owns the operational lifecycle from lock acquisition to final closure.",
+      "The consumer Lambda no longer owns persistence of success or failure results.",
+      "Duplicate work items are stopped early through fail-fast idempotency.",
+      "Transient provider failures are retried with exponential backoff and full jitter.",
+      "Terminal failures are closed immediately without retry.",
+      "Final operational evidence is persisted in one consistent path."
+    ]
+  },
+  "in_scope": [
+    "Refactor of the AWS Step Functions workflow for phase 2.",
+    "Fail-fast idempotency lock acquisition.",
+    "Pending record lifecycle transition from PENDING to IN_PROGRESS to COMPLETED or FAILED.",
+    "Retry policy for transient provider failures with exponential backoff and full jitter.",
+    "Immediate failure capture for terminal provider errors.",
+    "Final persistence of success and failure evidence by the state machine.",
+    "Use of native DynamoDB Step Functions integrations whenever possible."
+  ],
+  "out_of_scope": [
+    "Changes to the producer dispatch model.",
+    "Changes to SQS FIFO provider isolation.",
+    "Massive-scale redesign for 1M+ records.",
+    "Replay tooling or operational dashboards.",
+    "Multi-region architecture.",
+    "Business rule changes in provider API classification beyond the existing transient versus terminal distinction."
+  ],
+  "actors": [
+    {
+      "name": "Producer",
+      "description": "Dispatches eligible work items into the provider-isolated FIFO queue."
+    },
+    {
+      "name": "Orchestrator Lambda",
+      "description": "Starts one state machine execution per work item."
+    },
+    {
+      "name": "State Machine",
+      "description": "Owns operational flow, retries, lifecycle transitions, idempotency, and final persistence."
+    },
+    {
+      "name": "Consumer Lambda",
+      "description": "Executes the provider API call and returns business success or failure information."
+    },
+    {
+      "name": "Technical Reviewer",
+      "description": "Validates that orchestration concerns are separated cleanly from business execution."
+    }
+  ],
+  "user_journeys": [
+    {
+      "id": "journey-01",
+      "name": "Successful work item closes through the success path",
+      "steps": [
+        "A work item starts its orchestration execution.",
+        "The state machine acquires the idempotency lock.",
+        "The state machine marks the pending record as in progress.",
+        "The consumer Lambda completes successfully.",
+        "The state machine persists final success evidence, closes the idempotency record, and marks the pending record as completed."
+      ]
+    },
+    {
+      "id": "journey-02",
+      "name": "Transient provider failure is retried with resilience controls",
+      "steps": [
+        "A work item starts execution.",
+        "The provider returns a transient failure.",
+        "The state machine retries the consumer Lambda using exponential backoff and full jitter.",
+        "The work item eventually succeeds or exhausts retry attempts.",
+        "The state machine persists the final outcome and closes the lifecycle."
+      ]
+    },
+    {
+      "id": "journey-03",
+      "name": "Terminal provider failure closes immediately",
+      "steps": [
+        "A work item starts execution.",
+        "The provider returns a terminal failure.",
+        "The state machine stops retrying immediately.",
+        "The state machine persists failure evidence and marks the work item as failed."
+      ]
+    },
+    {
+      "id": "journey-04",
+      "name": "Duplicate work item ends as fail-fast duplicate",
+      "steps": [
+        "A duplicate logical work item starts execution.",
+        "The state machine fails to acquire the idempotency lock or cannot claim the pending record.",
+        "The execution ends without invoking the provider Lambda a second time."
+      ]
+    }
+  ],
+  "use_cases": [
+    {
+      "id": "uc-01",
+      "title": "Acquire duplicate protection before business execution",
+      "description": "The workflow must claim a logical work item before any provider call is attempted."
+    },
+    {
+      "id": "uc-02",
+      "title": "Advance the pending record lifecycle",
+      "description": "The workflow must reflect operational progress in the pending record state."
+    },
+    {
+      "id": "uc-03",
+      "title": "Retry transient provider failures with jittered backoff",
+      "description": "The workflow must absorb temporary provider instability without causing thundering herd behavior."
+    },
+    {
+      "id": "uc-04",
+      "title": "Stop terminal failures immediately",
+      "description": "The workflow must avoid retrying failures that are not recoverable by repetition."
+    },
+    {
+      "id": "uc-05",
+      "title": "Persist final evidence from the orchestration layer",
+      "description": "The workflow must be the single owner of final success and failure records."
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "br-01",
+      "rule": "The state machine must remain operational only and must not embed provider business rules beyond already-classified transient versus terminal outcomes."
+    },
+    {
+      "id": "br-02",
+      "rule": "The consumer Lambda must not own final persistence in the results table."
+    },
+    {
+      "id": "br-03",
+      "rule": "A work item must acquire idempotency protection before any provider execution."
+    },
+    {
+      "id": "br-04",
+      "rule": "A duplicate work item must stop early without a second independent provider call."
+    },
+    {
+      "id": "br-05",
+      "rule": "A transient failure must be retried with exponential backoff and full jitter."
+    },
+    {
+      "id": "br-06",
+      "rule": "A terminal failure must not be retried."
+    },
+    {
+      "id": "br-07",
+      "rule": "The pending record lifecycle must reflect PENDING, IN_PROGRESS, COMPLETED, and FAILED."
+    },
+    {
+      "id": "br-08",
+      "rule": "Final success and failure evidence must be written by the orchestration workflow, not by the business Lambda."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "fr-01",
+      "title": "Idempotency lock acquisition",
+      "statement": "The workflow must attempt conditional acquisition of a lock for each logical work item before invoking the consumer Lambda."
+    },
+    {
+      "id": "fr-02",
+      "title": "Fail-fast duplicate handling",
+      "statement": "If the logical work item is already claimed, the workflow must finish without a second business execution."
+    },
+    {
+      "id": "fr-03",
+      "title": "Pending record in-progress transition",
+      "statement": "The workflow must transition the pending record from PENDING to IN_PROGRESS before business execution."
+    },
+    {
+      "id": "fr-04",
+      "title": "Transient retry behavior",
+      "statement": "The workflow must retry transient provider failures using exponential backoff with full jitter."
+    },
+    {
+      "id": "fr-05",
+      "title": "Terminal failure behavior",
+      "statement": "The workflow must route terminal provider failures directly to final failure closure."
+    },
+    {
+      "id": "fr-06",
+      "title": "Success persistence ownership",
+      "statement": "The workflow must persist final success evidence after a successful consumer execution."
+    },
+    {
+      "id": "fr-07",
+      "title": "Failure persistence ownership",
+      "statement": "The workflow must persist final failure evidence after a terminal failure or exhausted transient retries."
+    },
+    {
+      "id": "fr-08",
+      "title": "Pending record final closure",
+      "statement": "The workflow must mark the pending record as COMPLETED on success and FAILED on terminal or exhausted failure."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "ac-01",
+      "given": "A new work item starts execution",
+      "when": "The workflow begins",
+      "then": "It must attempt idempotency lock acquisition before any provider call."
+    },
+    {
+      "id": "ac-02",
+      "given": "The idempotency lock already exists",
+      "when": "The workflow handles the work item",
+      "then": "It must end without invoking the consumer Lambda again."
+    },
+    {
+      "id": "ac-03",
+      "given": "A pending record is eligible",
+      "when": "The workflow starts business execution",
+      "then": "The pending record must transition to IN_PROGRESS."
+    },
+    {
+      "id": "ac-04",
+      "given": "The consumer Lambda reports success",
+      "when": "The workflow closes the work item",
+      "then": "It must persist success evidence, complete the idempotency record, and mark the pending record as COMPLETED."
+    },
+    {
+      "id": "ac-05",
+      "given": "The consumer Lambda reports a transient provider failure",
+      "when": "The workflow handles the failure",
+      "then": "It must retry with exponential backoff and full jitter."
+    },
+    {
+      "id": "ac-06",
+      "given": "Transient retries are exhausted",
+      "when": "The workflow closes the work item",
+      "then": "It must persist final failure evidence and mark the pending record as FAILED."
+    },
+    {
+      "id": "ac-07",
+      "given": "The consumer Lambda reports a terminal provider failure",
+      "when": "The workflow handles the failure",
+      "then": "It must skip retry and close directly through the failure path."
+    },
+    {
+      "id": "ac-08",
+      "given": "A reviewer inspects the architecture",
+      "when": "They compare the state machine and the consumer",
+      "then": "They must see that persistence ownership belongs to the state machine and business execution belongs to the consumer Lambda."
+    }
+  ],
+  "assumptions": [
+    "Provider error classification continues to be produced by the consumer Lambda as transient versus terminal outcomes.",
+    "SQS FIFO remains the source of same-provider isolation and is not redefined by this refactor.",
+    "Operational duplicate handling can finish as a no-op successful termination rather than a failed execution.",
+    "This feature is a focused refactor inside phase 2, not a new phase with new product scope."
+  ],
+  "open_questions": [
+    {
+      "id": "oq-01",
+      "question": "Should duplicate terminations write explicit audit evidence to tapi-results, or is idempotency plus execution history sufficient?",
+      "resolved_as": "Do not persist duplicate outcomes in tapi-results; treat them as operational no-op completions."
+    }
+  ]
+}

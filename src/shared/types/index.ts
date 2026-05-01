@@ -18,7 +18,16 @@ export interface ProviderRecord {
   readonly status: RecordStatus;
 }
 
-export type RecordStatus = 'PENDING' | 'IN_PROGRESS' | 'SUCCESS' | 'FAILED';
+export interface DispatchSlotMetadata {
+  readonly dispatchDate: string;
+  readonly dispatchSlot: number;
+  readonly dispatchSlotPk: string;
+  readonly dispatchSortKey: string;
+}
+
+export interface PendingDispatchRecord extends ProviderRecord, DispatchSlotMetadata {}
+
+export type RecordStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
 
 /** Message sent to SQS FIFO. One message = one ProviderRecord. */
 export interface SqsMessage {
@@ -34,9 +43,19 @@ export interface ProviderApiResult {
   readonly recordId: string;
   readonly providerId: string;
   readonly statusCode: number;
-  readonly responseBody: unknown;
+  readonly responseBody: string;
   readonly durationMs: number;
   readonly processedAt: string;   // ISO 8601 timestamp
+}
+
+export interface WorkflowMetadata {
+  readonly idempotencyTtl: string;
+  readonly resultsTtl: string;
+}
+
+export interface ConsumerWorkflowInput {
+  readonly workItem: ProviderRecord;
+  readonly workflow: WorkflowMetadata;
 }
 
 /** What gets written to the DynamoDB Results table */
@@ -48,12 +67,27 @@ export interface ResultRecord {
   readonly recordId: string;
   readonly providerId: string;
   readonly statusCode: number;
-  readonly responseBody: unknown;
+  readonly responseBody: string;
   readonly durationMs: number;
   readonly processedAt: string;
   /** Unix epoch seconds — DynamoDB TTL field */
   readonly ttl: number;
 }
+
+export interface IdempotencyRecord {
+  readonly idempotencyKey: string;
+  readonly recordId: string;
+  readonly providerId: string;
+  readonly scheduledDate: string;
+  readonly status: IdempotencyStatus;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly failedAt?: string;
+  readonly failureReason?: string;
+  readonly ttl: number;
+}
+
+export type IdempotencyStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
 
 /** Error types the consumer domain can distinguish */
 export type ApiErrorKind =

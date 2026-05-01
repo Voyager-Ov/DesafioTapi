@@ -19,7 +19,7 @@ function makeResult(overrides: Partial<ProviderApiResult> = {}): ProviderApiResu
     recordId: 'rec-001',
     providerId: 'prov-A',
     statusCode: 200,
-    responseBody: { ok: true },
+    responseBody: '{"ok":true}',
     durationMs: 120,
     processedAt: '2025-01-15T10:00:00.000Z',
     ...overrides,
@@ -61,10 +61,7 @@ describe('DynamoDbResultRepository', () => {
       recordId: 'rec-001',
       providerId: 'prov-A',
       statusCode: 401,
-      responseBody: {
-        error: 'Unauthorized',
-        status: 401,
-      },
+      responseBody: '{"error":"Unauthorized","status":401}',
     });
   });
 });

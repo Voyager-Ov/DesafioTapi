@@ -32,21 +32,21 @@ export const handler = async (
   event: ScheduledEvent,
   context: Context,
 ): Promise<void> => {
+  const dispatchWindow = extractDispatchWindow(event);
+
   console.info(JSON.stringify({
     level: 'INFO',
     message: 'Producer Lambda invoked',
     source: (event as unknown as Record<string, unknown>).source,
+    slotId: dispatchWindow.slotId,
+    slotsPerDay: dispatchWindow.slotsPerDay,
+    targetDate: dispatchWindow.targetDate ?? 'today-utc',
     requestId: context.awsRequestId,
     remainingTimeMs: context.getRemainingTimeInMillis(),
   }));
 
   try {
-    // The date can be overridden in the event payload for manual back-fills.
-    // In production, EventBridge sends the standard ScheduledEvent shape,
-    // so we default to today UTC.
-    const targetDate = extractTargetDate(event);
-
-    const result = await dispatchRecordsUseCase.execute(targetDate);
+    const result = await dispatchRecordsUseCase.execute(dispatchWindow);
 
     console.info(JSON.stringify({
       level: 'INFO',
@@ -71,15 +71,27 @@ export const handler = async (
 // ---------------------------------------------------------------------------
 
 /**
- * Extracts the target date from the event payload.
+ * Extracts the distributed dispatch contract from the event payload.
  * Supports a `targetDate` override in the event for manual backfill runs.
  */
-function extractTargetDate(event: ScheduledEvent): string | undefined {
+function extractDispatchWindow(event: ScheduledEvent): DispatchWindowInput {
   const payload = event as unknown as Record<string, unknown>;
-  if (typeof payload.targetDate === 'string') {
-    return payload.targetDate;
+  const slotId = payload.slotId;
+  const slotsPerDay = payload.slotsPerDay;
+
+  if (!Number.isInteger(slotId) || Number(slotId) < 0) {
+    throw new Error(`Invalid or missing slotId in dispatch event: ${String(slotId)}`);
   }
-  return undefined; // Use case defaults to today UTC
+
+  if (!Number.isInteger(slotsPerDay) || Number(slotsPerDay) <= 0) {
+    throw new Error(`Invalid or missing slotsPerDay in dispatch event: ${String(slotsPerDay)}`);
+  }
+
+  return {
+    slotId: Number(slotId),
+    slotsPerDay: Number(slotsPerDay),
+    targetDate: typeof payload.targetDate === 'string' ? payload.targetDate : undefined,
+  };
 }
 
 function requireEnv(name: string): string {
@@ -91,4 +103,10 @@ function requireEnv(name: string): string {
     );
   }
   return value;
+}
+
+interface DispatchWindowInput {
+  readonly slotId: number;
+  readonly slotsPerDay: number;
+  readonly targetDate?: string;
 }

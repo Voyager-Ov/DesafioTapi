@@ -1,0 +1,80 @@
+{
+  "tapi-pending-records": [
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": { "S": "DATE#2026-04-30" },
+          "SK": { "S": "RECORD#rec-201" },
+          "recordId": { "S": "rec-201" },
+          "providerId": { "S": "prov-A" },
+          "endpoint": { "S": "https://httpbin.org/status/200" },
+          "httpMethod": { "S": "GET" },
+          "scheduledDate": { "S": "2026-04-30" },
+          "status": { "S": "PENDING" },
+          "ttl": { "N": "1798848000" },
+          "dispatchDate": { "S": "2026-04-30" },
+          "dispatchSlot": { "N": "149" },
+          "dispatchSlotPk": { "S": "DATE#2026-04-30#SLOT#149" },
+          "dispatchSortKey": { "S": "PROVIDER#prov-A#RECORD#rec-201" }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": { "S": "DATE#2026-04-30" },
+          "SK": { "S": "RECORD#rec-202" },
+          "recordId": { "S": "rec-202" },
+          "providerId": { "S": "prov-A" },
+          "endpoint": { "S": "https://httpbin.org/status/200" },
+          "httpMethod": { "S": "GET" },
+          "scheduledDate": { "S": "2026-04-30" },
+          "status": { "S": "PENDING" },
+          "ttl": { "N": "1798848000" },
+          "dispatchDate": { "S": "2026-04-30" },
+          "dispatchSlot": { "N": "156" },
+          "dispatchSlotPk": { "S": "DATE#2026-04-30#SLOT#156" },
+          "dispatchSortKey": { "S": "PROVIDER#prov-A#RECORD#rec-202" }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": { "S": "DATE#2026-04-30" },
+          "SK": { "S": "RECORD#rec-203" },
+          "recordId": { "S": "rec-203" },
+          "providerId": { "S": "prov-B" },
+          "endpoint": { "S": "https://httpbin.org/status/400" },
+          "httpMethod": { "S": "GET" },
+          "scheduledDate": { "S": "2026-04-30" },
+          "status": { "S": "PENDING" },
+          "ttl": { "N": "1798848000" },
+          "dispatchDate": { "S": "2026-04-30" },
+          "dispatchSlot": { "N": "17" },
+          "dispatchSlotPk": { "S": "DATE#2026-04-30#SLOT#017" },
+          "dispatchSortKey": { "S": "PROVIDER#prov-B#RECORD#rec-203" }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": { "S": "DATE#2026-04-30" },
+          "SK": { "S": "RECORD#rec-204" },
+          "recordId": { "S": "rec-204" },
+          "providerId": { "S": "prov-C" },
+          "endpoint": { "S": "https://httpbin.org/status/503" },
+          "httpMethod": { "S": "GET" },
+          "scheduledDate": { "S": "2026-04-30" },
+          "status": { "S": "PENDING" },
+          "ttl": { "N": "1798848000" },
+          "dispatchDate": { "S": "2026-04-30" },
+          "dispatchSlot": { "N": "177" },
+          "dispatchSlotPk": { "S": "DATE#2026-04-30#SLOT#177" },
+          "dispatchSortKey": { "S": "PROVIDER#prov-C#RECORD#rec-204" }
+        }
+      }
+    }
+  ]
+}

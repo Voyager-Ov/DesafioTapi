@@ -1,0 +1,136 @@
+{
+  "tapi-pending-records": [
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": {
+            "S": "DATE#2026-04-31"
+          },
+          "SK": {
+            "S": "RECORD#rec-201"
+          },
+          "recordId": {
+            "S": "rec-201"
+          },
+          "providerId": {
+            "S": "prov-A"
+          },
+          "endpoint": {
+            "S": "https://httpbin.org/status/200"
+          },
+          "httpMethod": {
+            "S": "GET"
+          },
+          "scheduledDate": {
+            "S": "2026-04-31"
+          },
+          "status": {
+            "S": "PENDING"
+          },
+          "ttl": {
+            "N": "1798848000"
+          }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": {
+            "S": "DATE#2026-04-31"
+          },
+          "SK": {
+            "S": "RECORD#rec-202"
+          },
+          "recordId": {
+            "S": "rec-202"
+          },
+          "providerId": {
+            "S": "prov-A"
+          },
+          "endpoint": {
+            "S": "https://httpbin.org/status/200"
+          },
+          "httpMethod": {
+            "S": "GET"
+          },
+          "scheduledDate": {
+            "S": "2026-04-31"
+          },
+          "status": {
+            "S": "PENDING"
+          },
+          "ttl": {
+            "N": "1798848000"
+          }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": {
+            "S": "DATE#2026-04-31"
+          },
+          "SK": {
+            "S": "RECORD#rec-203"
+          },
+          "recordId": {
+            "S": "rec-203"
+          },
+          "providerId": {
+            "S": "prov-B"
+          },
+          "endpoint": {
+            "S": "https://httpbin.org/status/400"
+          },
+          "httpMethod": {
+            "S": "GET"
+          },
+          "scheduledDate": {
+            "S": "2026-04-31"
+          },
+          "status": {
+            "S": "PENDING"
+          },
+          "ttl": {
+            "N": "1798848000"
+          }
+        }
+      }
+    },
+    {
+      "PutRequest": {
+        "Item": {
+          "PK": {
+            "S": "DATE#2026-04-31"
+          },
+          "SK": {
+            "S": "RECORD#rec-204"
+          },
+          "recordId": {
+            "S": "rec-204"
+          },
+          "providerId": {
+            "S": "prov-C"
+          },
+          "endpoint": {
+            "S": "https://httpbin.org/status/503"
+          },
+          "httpMethod": {
+            "S": "GET"
+          },
+          "scheduledDate": {
+            "S": "2026-04-31"
+          },
+          "status": {
+            "S": "PENDING"
+          },
+          "ttl": {
+            "N": "1798848000"
+          }
+        }
+      }
+    }
+  ]
+}

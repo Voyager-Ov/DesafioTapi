@@ -1,0 +1,165 @@
+{
+  "feature_id": "phase-2-state-machine-refactor",
+  "document_type": "todos",
+  "version": "0.1.0",
+  "status": "approved",
+  "execution_batches": [
+    {
+      "id": "batch-1",
+      "mode": "sequential",
+      "description": "Make the consumer Lambda pure business execution and align its contract with the state machine-owned persistence model.",
+      "tasks": [
+        "SM-01",
+        "SM-02"
+      ]
+    },
+    {
+      "id": "batch-2",
+      "mode": "sequential",
+      "description": "Refactor the Step Functions definition to preserve input context, own final persistence, and apply the new retry/failure strategy.",
+      "tasks": [
+        "SM-03",
+        "SM-04",
+        "SM-05"
+      ]
+    },
+    {
+      "id": "batch-3",
+      "mode": "sequential",
+      "description": "Validate the refactored machine locally and through manual AWS executions.",
+      "tasks": [
+        "SM-06",
+        "SM-07"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "SM-01",
+      "title": "Remove results-table persistence from the consumer use case",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [],
+      "outputs": [
+        "Consumer Lambda returns business success data and throws classified errors without writing to tapi-results"
+      ],
+      "exit_criteria": [
+        "ProcessProviderRecordUseCase no longer saves success results.",
+        "ProcessProviderRecordUseCase no longer saves terminal failures.",
+        "Consumer still returns structured success payloads and throws TransientApiError or TerminalApiError as before."
+      ]
+    },
+    {
+      "id": "SM-02",
+      "title": "Align consumer tests and DI with pure business execution",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-01"
+      ],
+      "outputs": [
+        "Consumer-side tests that validate pure provider execution and error classification only"
+      ],
+      "exit_criteria": [
+        "Tests no longer expect the consumer to persist success or failure results.",
+        "Consumer handler and dependency wiring remain compatible with Step Functions invocation."
+      ]
+    },
+    {
+      "id": "SM-03",
+      "title": "Refactor InvokeConsumerLambda to preserve root workflow input",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-02"
+      ],
+      "outputs": [
+        "A Lambda invoke task that keeps recordId/providerId/scheduledDate/workflow metadata available after invocation"
+      ],
+      "exit_criteria": [
+        "The Lambda invoke task injects only the business payload required by tapi-consumer.",
+        "The original workflow input is still available to downstream states after InvokeConsumerLambda.",
+        "The Lambda success result is stored under a dedicated result node rather than replacing the root input."
+      ]
+    },
+    {
+      "id": "SM-04",
+      "title": "Move final success and failure persistence into native DynamoDB task states",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-03"
+      ],
+      "outputs": [
+        "State-machine-owned success and failure persistence paths"
+      ],
+      "exit_criteria": [
+        "Success path writes to tapi-results using native DynamoDB integration.",
+        "Terminal failure path writes to tapi-results using native DynamoDB integration.",
+        "Exhausted transient failure path writes to tapi-results using native DynamoDB integration.",
+        "Duplicate executions remain a no-op and do not write to tapi-results."
+      ]
+    },
+    {
+      "id": "SM-05",
+      "title": "Finalize retry, catch, and lifecycle closure semantics in the state machine",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-04"
+      ],
+      "outputs": [
+        "A corrected state machine definition aligned with the phase-2 state-machine spec"
+      ],
+      "exit_criteria": [
+        "Retry block covers transient provider failures with BackoffRate 2.0 and JitterStrategy FULL.",
+        "Terminal failures are routed directly to the failure path without retry.",
+        "Exhausted transient retries also route to the failure path.",
+        "Success path marks idempotency COMPLETED and pending record COMPLETED.",
+        "Failure path marks idempotency FAILED and pending record FAILED."
+      ]
+    },
+    {
+      "id": "SM-06",
+      "title": "Validate local build, tests, and CDK synthesis for the refactored workflow",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-05"
+      ],
+      "outputs": [
+        "Passing local quality gates for the refactored state machine"
+      ],
+      "exit_criteria": [
+        "npm run build passes.",
+        "npm test -- --runInBand passes with updated expectations.",
+        "npx cdk synth TapiStack succeeds with the new state-machine definition."
+      ]
+    },
+    {
+      "id": "SM-07",
+      "title": "Validate manual AWS execution paths for success, terminal failure, transient retry, and duplicate no-op",
+      "owner_role": "lead-engineer",
+      "status": "pending",
+      "parallelizable": false,
+      "depends_on": [
+        "SM-06"
+      ],
+      "outputs": [
+        "Operational proof that the state machine now owns persistence and lifecycle closure correctly"
+      ],
+      "exit_criteria": [
+        "A valid pending record on HTTP 200 reaches success persistence and pending COMPLETED.",
+        "A valid pending record on HTTP 400 reaches failure persistence and pending FAILED without retry.",
+        "A valid pending record on HTTP 503 retries with jittered backoff and reaches exhausted failure if attempts are consumed.",
+        "A duplicate or already-claimed record ends in DuplicateWorkItem without invoking the consumer or writing to tapi-results."
+      ]
+    }
+  ]
+}

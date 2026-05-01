@@ -4,12 +4,11 @@ import {
   PutCommand,
   PutCommandInput,
 } from '@aws-sdk/lib-dynamodb';
-import { IResultRepositoryPort } from '../ports/out-ports';
 import { ProviderApiResult, ProviderRecord, ResultRecord } from '../../../shared/types';
 
 const TTL_DAYS = Number(process.env.TTL_DAYS ?? '90');
 
-export class DynamoDbResultRepository implements IResultRepositoryPort {
+export class DynamoDbResultRepository {
   private readonly docClient: DynamoDBDocumentClient;
 
   constructor(
@@ -47,10 +46,10 @@ export class DynamoDbResultRepository implements IResultRepositoryPort {
       recordId: record.recordId,
       providerId: record.providerId,
       statusCode: error.statusCode,
-      responseBody: {
+      responseBody: JSON.stringify({
         error: error.message,
         status: error.statusCode,
-      },
+      }),
       durationMs: 0,
       processedAt,
       ttl: this.buildTtl(processedAt),

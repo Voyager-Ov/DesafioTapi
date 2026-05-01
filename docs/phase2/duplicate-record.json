@@ -1,0 +1,8 @@
+{
+  "recordId": "rec-999",
+  "providerId": "prov-D",
+  "endpoint": "https://httpbin.org/status/200",
+  "httpMethod": "GET",
+  "scheduledDate": "2026-04-30",
+  "status": "PENDING"
+}

@@ -1,5 +1,5 @@
-import { ProviderRecord, SqsMessage } from '../../../../shared/types';
-import { IQueuePort, IRecordRepositoryPort } from '../../ports/out-ports';
+import { PendingDispatchRecord, ProviderRecord, SqsMessage } from '../../../../shared/types';
+import { DispatchSlotQuery, IQueuePort, IRecordRepositoryPort } from '../../ports/out-ports';
 
 // ---------------------------------------------------------------------------
 // DispatchRecordsUseCase
@@ -18,29 +18,34 @@ export class DispatchRecordsUseCase {
   ) {}
 
   /**
-   * Main entry point for the daily batch dispatch.
+   * Main entry point for one distributed date-slot dispatch window.
    *
    * Algorithm:
-   *  1. Fetch all PENDING records for today from the repository.
+   *  1. Fetch all records assigned to one date-slot partition from the repository.
    *  2. Transform each ProviderRecord into a SqsMessage with the correct
    *     MessageGroupId (PROVIDER#<id>) for per-provider FIFO ordering.
    *  3. Send messages in batches of SQS_BATCH_SIZE to respect API limits.
    *
-   * @param date ISO date string ('YYYY-MM-DD'). Defaults to today UTC.
+   * @param input Distributed dispatch contract with slotId, slotsPerDay and optional targetDate.
    * @returns Dispatch summary for logging/monitoring.
    */
-  async execute(date?: string): Promise<DispatchResult> {
-    const targetDate = date ?? this.todayUtc();
+  async execute(input: DispatchWindowInput): Promise<DispatchResult> {
+    const targetDate = input.targetDate ?? this.todayUtc();
+    const slotQuery: DispatchSlotQuery = {
+      targetDate,
+      slotId: input.slotId,
+      slotsPerDay: input.slotsPerDay,
+    };
 
-    const records = await this.recordRepository.getPendingRecords(targetDate);
+    const records = await this.recordRepository.getPendingRecordsForSlot(slotQuery);
 
     if (records.length === 0) {
-      return { date: targetDate, dispatched: 0, skipped: 0 };
+      return { targetDate, slotId: input.slotId, queried: 0, dispatched: 0, skipped: 0 };
     }
 
-    // Only PENDING records should be dispatched; filter defensively
+    const queried = records.length;
     const eligibleRecords = records.filter((r) => r.status === 'PENDING');
-    const skipped = records.length - eligibleRecords.length;
+    const skipped = queried - eligibleRecords.length;
 
     const messages = eligibleRecords.map((record) =>
       this.buildSqsMessage(record),
@@ -54,7 +59,9 @@ export class DispatchRecordsUseCase {
     }
 
     return {
-      date: targetDate,
+      targetDate,
+      slotId: input.slotId,
+      queried,
       dispatched: eligibleRecords.length,
       skipped,
     };
@@ -72,15 +79,27 @@ export class DispatchRecordsUseCase {
    *     delivered ONE AT A TIME, in order. This is how we enforce
    *     "solo una petición a la vez por proveedor" at the infrastructure level.
    *
-   * MessageDeduplicationId = <recordId>#<scheduledDate>
-   *   → Prevents duplicate SQS messages if the Producer Lambda retries.
-   *     The combination is unique per business day.
+   * MessageDeduplicationId = <recordId>
+   *   → Uses the stable logical work-item identity approved for FIFO exactly-once protection.
    */
-  private buildSqsMessage(record: ProviderRecord): SqsMessage {
+  private buildSqsMessage(record: PendingDispatchRecord): SqsMessage {
     return {
-      messageBody: JSON.stringify(record),
+      messageBody: JSON.stringify(this.toQueuePayload(record)),
       messageGroupId: `PROVIDER#${record.providerId}`,
-      messageDeduplicationId: `${record.recordId}#${record.scheduledDate}`,
+      messageDeduplicationId: record.recordId,
+    };
+  }
+
+  private toQueuePayload(record: PendingDispatchRecord): ProviderRecord {
+    return {
+      recordId: record.recordId,
+      providerId: record.providerId,
+      endpoint: record.endpoint,
+      httpMethod: record.httpMethod,
+      payload: record.payload,
+      headers: record.headers,
+      scheduledDate: record.scheduledDate,
+      status: record.status,
     };
   }
 
@@ -104,7 +123,15 @@ export class DispatchRecordsUseCase {
 const BATCH_SIZE = 10; // SQS SendMessageBatch hard limit
 
 export interface DispatchResult {
-  readonly date: string;
+  readonly targetDate: string;
+  readonly slotId: number;
+  readonly queried: number;
   readonly dispatched: number;
   readonly skipped: number;
+}
+
+export interface DispatchWindowInput {
+  readonly slotId: number;
+  readonly slotsPerDay: number;
+  readonly targetDate?: string;
 }

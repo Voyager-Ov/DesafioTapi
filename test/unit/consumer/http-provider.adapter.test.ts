@@ -17,7 +17,7 @@ function makeRecord(overrides: Partial<ProviderRecord> = {}): ProviderRecord {
 }
 
 describe('HttpProviderAdapter', () => {
-  it('envía la petición HTTP y devuelve el resultado parseado', async () => {
+  it('sends the HTTP request and serializes JSON responses as strings', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -39,10 +39,36 @@ describe('HttpProviderAdapter', () => {
       }),
     );
     expect(result.statusCode).toBe(200);
-    expect(result.responseBody).toEqual({ ok: true });
+    expect(result.responseBody).toBe('{"ok":true}');
   });
 
-  it('clasifica respuestas 503 como TransientApiError', async () => {
+  it('returns plain text responses unchanged', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => 'plain text',
+    });
+    const adapter = new HttpProviderAdapter(15000, fetchMock as never);
+
+    const result = await adapter.call(makeRecord());
+
+    expect(result.responseBody).toBe('plain text');
+  });
+
+  it('returns an empty string for empty successful responses', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    });
+    const adapter = new HttpProviderAdapter(15000, fetchMock as never);
+
+    const result = await adapter.call(makeRecord());
+
+    expect(result.responseBody).toBe('');
+  });
+
+  it('classifies 503 responses as TransientApiError', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: false,
       status: 503,
@@ -53,7 +79,7 @@ describe('HttpProviderAdapter', () => {
     await expect(adapter.call(makeRecord())).rejects.toBeInstanceOf(TransientApiError);
   });
 
-  it('clasifica respuestas 400 como TerminalApiError', async () => {
+  it('classifies 400 responses as TerminalApiError', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: false,
       status: 400,
@@ -64,7 +90,7 @@ describe('HttpProviderAdapter', () => {
     await expect(adapter.call(makeRecord())).rejects.toBeInstanceOf(TerminalApiError);
   });
 
-  it('convierte timeout en TransientApiError', async () => {
+  it('converts timeout into TransientApiError', async () => {
     const abortError = new Error('Aborted');
     abortError.name = 'AbortError';
     const fetchMock = jest.fn().mockRejectedValue(abortError);

@@ -1,4 +1,4 @@
-import { ProviderRecord, SqsMessage } from '../../../shared/types';
+import { PendingDispatchRecord, SqsMessage } from '../../../shared/types';
 
 // ---------------------------------------------------------------------------
 // Producer Output Ports
@@ -11,16 +11,21 @@ import { ProviderRecord, SqsMessage } from '../../../shared/types';
 // real AWS services required.
 // ---------------------------------------------------------------------------
 
+export interface DispatchSlotQuery {
+  readonly targetDate: string;
+  readonly slotId: number;
+  readonly slotsPerDay: number;
+}
+
 /**
  * Port for reading pending work items.
  * Primary implementation: DynamoDbRecordsAdapter
  */
 export interface IRecordRepositoryPort {
   /**
-   * Returns all PENDING records scheduled for the given date.
-   * @param date ISO date string: 'YYYY-MM-DD'
+   * Returns all records assigned to the given date-slot partition.
    */
-  getPendingRecords(date: string): Promise<ProviderRecord[]>;
+  getPendingRecordsForSlot(query: DispatchSlotQuery): Promise<PendingDispatchRecord[]>;
 }
 
 /**

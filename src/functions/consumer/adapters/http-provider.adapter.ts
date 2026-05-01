@@ -35,7 +35,7 @@ export class HttpProviderAdapter implements IProviderApiPort {
         recordId: record.recordId,
         providerId: record.providerId,
         statusCode: response.status,
-        responseBody: this.parseBody(rawBody),
+        responseBody: this.serializeResponseBody(rawBody),
         durationMs: 0,
         processedAt: new Date().toISOString(),
       };
@@ -62,9 +62,13 @@ export class HttpProviderAdapter implements IProviderApiPort {
     return response.text();
   }
 
-  private parseBody(body: string): unknown {
+  private serializeResponseBody(body: string): string {
     try {
-      return body ? JSON.parse(body) : null;
+      if (!body) {
+        return '';
+      }
+
+      return JSON.stringify(JSON.parse(body));
     } catch {
       return body;
     }
