@@ -1,6 +1,10 @@
 import { ProcessProviderRecordUseCase } from '../../../src/functions/consumer/domain/use-cases/process-record.use-case';
 import { IProviderApiPort } from '../../../src/functions/consumer/ports/out-ports';
-import { TerminalApiError, TransientApiError } from '../../../src/functions/consumer/domain/errors/api.errors';
+import {
+  TerminalApiError,
+  TransientApiError,
+  classifyHttpError,
+} from '../../../src/functions/consumer/domain/errors/api.errors';
 import { ProviderApiResult, ProviderRecord } from '../../../src/shared/types';
 
 class FakeProviderApi implements IProviderApiPort {
@@ -159,8 +163,6 @@ describe('ProcessProviderRecordUseCase', () => {
 });
 
 describe('classifyHttpError', () => {
-  const { classifyHttpError } = require('../../../src/functions/consumer/domain/errors/api.errors');
-
   it.each([429, 502, 503, 504])(
     'clasifica %i como TransientApiError',
     (statusCode) => {

@@ -561,8 +561,8 @@ export class TapiStack extends cdk.Stack {
       .next(markPendingFailed)
       .next(completeWorkflow);
 
-    const terminalFailurePath = normalizeTerminalFailure.next(failureClosurePath);
-    const transientExhaustedFailurePath = normalizeTransientExhaustedFailure.next(failureClosurePath);
+    normalizeTerminalFailure.next(failureClosurePath);
+    normalizeTransientExhaustedFailure.next(failureClosurePath);
     const timeoutFailurePath = normalizeTimeoutFailure.next(failureClosurePath);
     const unexpectedFailurePath = normalizeUnexpectedFailure.next(failureClosurePath);
     const unexpectedClosureFailurePath = normalizeUnexpectedClosureFailure.next(failureClosurePath);

@@ -2,20 +2,12 @@
   "name": "tapi-challenge",
   "version": "1.0.0",
   "private": true,
-  "workspaces": [
-    "cdk",
-    ".",
-    "web"
-  ],
   "scripts": {
     "build": "tsc --build",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "lint": "eslint 'src/**/*.ts' 'tests/**/*.ts'",
-    "web:dev": "npm run dev --workspace web",
-    "web:build": "npm run build --workspace web",
-    "web:start": "npm run start --workspace web"
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"cdk/**/*.ts\" \"jest.config.ts\""
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.145",
